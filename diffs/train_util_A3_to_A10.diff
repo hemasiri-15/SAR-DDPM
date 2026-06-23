@@ -1,0 +1,24 @@
+--- a/guided_diffusion/train_util.py
++++ b/guided_diffusion/train_util.py
+@@ -228,15 +228,19 @@
+         while (
+             not self.lr_anneal_steps
+             or self.step + self.resume_step < self.lr_anneal_steps
+         ):
+-            clean_tensor, noisy_tensor, image_filename, look_num, struct_tensor = next(train_generator)
++            clean_tensor, noisy_tensor, image_filename, look_num, \
++                struct_tensor_s1, struct_tensor_s2, struct_tensor_s3 = next(train_generator)
+             noisy_tensor = noisy_tensor.to(dist_util.dev())
+             clean_tensor = clean_tensor.to(dist_util.dev())
+             look_num = look_num.to(dist_util.dev())
+-            struct_tensor = struct_tensor.to(dist_util.dev())
++            struct_tensor_s1 = struct_tensor_s1.to(dist_util.dev())
++            struct_tensor_s2 = struct_tensor_s2.to(dist_util.dev())
++            struct_tensor_s3 = struct_tensor_s3.to(dist_util.dev())
+ 
+             model_kwargs = {
+                 'low_res': noisy_tensor,
+                 'look_num': look_num,
+-                'struct_tensor': struct_tensor,
++                'struct_tensors': (struct_tensor_s1, struct_tensor_s2, struct_tensor_s3),
+             }

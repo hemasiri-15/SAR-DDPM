@@ -1,0 +1,74 @@
+--- a/structdiff/conditioning/conditioned_unet.py
++++ b/structdiff/conditioning/conditioned_unet.py
+@@ -57,6 +57,7 @@
+ from guided_diffusion.nn import timestep_embedding   # noqa: E402  FIX 1: module scope
+ from structdiff.conditioning.look_embedding import LookEmbedding  # noqa: E402
+ from structdiff.conditioning.struct_tensor_encoder import StructTensorEncoder  # noqa: E402
++from structdiff.conditioning.ms_struct_tensor_encoder import MultiScaleStructTensorEncoder  # noqa: E402
+ 
+ 
+ # ---------------------------------------------------------------------------
+@@ -81,9 +82,16 @@
+     struct_encoder : Optional[StructTensorEncoder]
+         A3 structure-tensor encoder. ``None`` unless
+         ``use_struct_tensor=True`` is passed to ``__init__``.
++    ms_struct_encoder : Optional[MultiScaleStructTensorEncoder]
++        A10 multi-scale structure-tensor encoder. ``None`` unless
++        ``use_ms_struct_tensor=True`` is passed to ``__init__``.
+     """
+ 
+-    def __init__(self, *args, use_struct_tensor: bool = False, **kwargs) -> None:
++    def __init__(
++        self,
++        *args,
++        use_struct_tensor: bool = False,
++        use_ms_struct_tensor: bool = False,
++        **kwargs,
++    ) -> None:
+         super().__init__(*args, **kwargs)
+         # time_embed_dim is always model_channels * 4 by UNetModel construction.
+         time_embed_dim: int = self.model_channels * 4
+@@ -94,6 +102,12 @@
+         self.struct_encoder: Optional[StructTensorEncoder] = None
+         if use_struct_tensor:
+             self.struct_encoder = StructTensorEncoder(time_embed_dim=time_embed_dim)
++
++        # A10: multi-scale structure tensor conditioning (optional).
++        self.ms_struct_encoder: Optional[MultiScaleStructTensorEncoder] = None
++        if use_ms_struct_tensor:
++            self.ms_struct_encoder = MultiScaleStructTensorEncoder(
++                time_embed_dim=time_embed_dim
++            )
+ 
+     def forward(
+         self,
+@@ -102,6 +116,7 @@
+         y: Optional[th.Tensor] = None,
+         look_num: Optional[th.Tensor] = None,
+         struct_tensor: Optional[th.Tensor] = None,
++        struct_tensors: Optional[tuple[th.Tensor, th.Tensor, th.Tensor]] = None,
+     ) -> th.Tensor:
+         """Apply the look-conditioned U-Net to an input batch.
+ 
+@@ -119,6 +134,10 @@
+         struct_tensor : th.Tensor, optional
+             A3 structure tensor, shape ``[B, 3, H, W]``. Used only if
+             ``self.struct_encoder is not None``.
++        struct_tensors : tuple[th.Tensor, th.Tensor, th.Tensor], optional
++            A10 multi-scale structure tensors ``(s1, s2, s3)``, each
++            shape ``[B, 3, H, W]``. Used only if
++            ``self.ms_struct_encoder is not None``.
+ 
+         Returns
+         -------
+@@ -163,6 +182,10 @@
+         if self.struct_encoder is not None and struct_tensor is not None:
+             emb = emb + self.struct_encoder(struct_tensor)
+ 
++        # A10: multi-scale structure tensor conditioning.
++        if self.ms_struct_encoder is not None and struct_tensors is not None:
++            emb = emb + self.ms_struct_encoder(struct_tensors)
++
+         # ------------------------------------------------------------------
+         # 2. U-Net forward pass — identical to upstream UNetModel.forward.
+         # ------------------------------------------------------------------

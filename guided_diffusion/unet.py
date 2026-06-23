@@ -6,6 +6,7 @@ import numpy as np
 import torch as th
 import torch.nn as nn
 import torch.nn.functional as F
+from structdiff.conditioning.look_embedding import LookEmbedding
 
 from .fp16_util import convert_module_to_f16, convert_module_to_f32
 from .nn import (
@@ -18,6 +19,10 @@ from .nn import (
     timestep_embedding,
 )
 
+from structdiff.conditioning.struct_tensor_encoder import StructTensorEncoder
+from structdiff.conditioning.ms_struct_tensor_encoder import MultiScaleStructTensorEncoder
+from structdiff.conditioning.tensor_spectral_encoder import TensorSpectralEncoder
+from structdiff.conditioning.wavelet_encoder import WaveletEncoder
 
 class AttentionPool2d(nn.Module):
     """
@@ -467,10 +472,30 @@ class UNetModel(nn.Module):
         self.num_head_channels = num_head_channels
         self.num_heads_upsample = num_heads_upsample
         time_embed_dim = model_channels * 4
+
         self.time_embed = nn.Sequential(
             linear(model_channels, time_embed_dim),
             nn.SiLU(),
             linear(time_embed_dim, time_embed_dim),
+        )
+
+        self.look_emb = LookEmbedding(
+            num_embeddings=5,
+            embedding_dim=time_embed_dim,
+        )
+
+        self.struct_encoder = StructTensorEncoder(
+            time_embed_dim=time_embed_dim
+        )
+
+        self.ms_struct_encoder = MultiScaleStructTensorEncoder(
+            time_embed_dim=time_embed_dim
+        )
+        self.tensor_spectral_encoder = TensorSpectralEncoder(
+            time_embed_dim=time_embed_dim
+        )
+        self.wavelet_encoder = WaveletEncoder(
+            time_embed_dim=time_embed_dim
         )
 
         if self.num_classes is not None:
@@ -535,7 +560,7 @@ class UNetModel(nn.Module):
                 input_block_chans.append(ch)
                 ds *= 2
                 self._feature_size += ch
-        
+
         self.middle_block = TimestepEmbedSequential(
             ResBlock(
                 ch,
@@ -634,7 +659,16 @@ class UNetModel(nn.Module):
         self.middle_block.apply(convert_module_to_f32)
         self.output_blocks.apply(convert_module_to_f32)
 
-    def forward(self, x, timesteps):
+    def forward(
+        self,
+        x,
+        timesteps,
+        look_num=None,
+        struct_tensor=None,
+        struct_tensors=None,
+        spectral_tensor=None,
+        wavelet_tensor=None
+    ):
         """
         Apply the model to an input batch.
 
@@ -642,20 +676,37 @@ class UNetModel(nn.Module):
         :param timesteps: a 1-D batch of timesteps.
         :return: an [N x C x ...] Tensor of outputs.
         """
-    
+
         hs = []
         emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
+
+        if look_num is not None:
+            emb = emb + self.look_emb(look_num)
+
+        if struct_tensor is not None:
+            emb = emb + self.struct_encoder(struct_tensor)
+
+        if struct_tensors is not None:
+            st1, st2, st3 = struct_tensors
+            emb = emb + self.ms_struct_encoder(st1, st2, st3)
+
+        if spectral_tensor is not None:
+            emb = emb + self.tensor_spectral_encoder(spectral_tensor)
+
+        if wavelet_tensor is not None:
+            emb = emb + self.wavelet_encoder(wavelet_tensor)
 
         h = x.type(self.dtype)
         for module in self.input_blocks:
             h = module(h, emb)
             hs.append(h)
-            
+
         h = self.middle_block(h, emb)
 
         for module in self.output_blocks:
             h = th.cat([h, hs.pop()], dim=1)
             h = module(h, emb)
+
         h = h.type(x.dtype)
         return self.out(h)
 
@@ -669,15 +720,22 @@ class SuperResModel(UNetModel):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        
+
     def forward(self, x, timesteps, **kwargs):
         noisy = kwargs['noisy']
+        look_num = kwargs.get("look_num", None)
+        struct_tensor = kwargs.get("struct_tensor", None)
+
         x = th.cat((x, noisy), dim=1)
 
-        output = super().forward(x, timesteps)
+        output = super().forward(
+            x,
+            timesteps,
+            look_num=look_num,
+        struct_tensor=struct_tensor,
+        )
 
         return output
-
 
 class EncoderUNetModel(nn.Module):
     """
@@ -892,4 +950,5 @@ class EncoderUNetModel(nn.Module):
         else:
             h = h.type(x.dtype)
             return self.out(h)
+
 

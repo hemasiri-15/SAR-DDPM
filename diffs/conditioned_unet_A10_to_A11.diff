@@ -1,0 +1,74 @@
+--- a/structdiff/conditioning/conditioned_unet.py
++++ b/structdiff/conditioning/conditioned_unet.py
+@@ -59,6 +59,7 @@
+ from structdiff.conditioning.struct_tensor_encoder import StructTensorEncoder  # noqa: E402
+ from structdiff.conditioning.ms_struct_tensor_encoder import MultiScaleStructTensorEncoder  # noqa: E402
++from structdiff.conditioning.tensor_spectral_encoder import TensorSpectralEncoder  # noqa: E402
+ 
+ 
+ # ---------------------------------------------------------------------------
+@@ -86,9 +87,16 @@
+     ms_struct_encoder : Optional[MultiScaleStructTensorEncoder]
+         A10 multi-scale structure-tensor encoder. ``None`` unless
+         ``use_ms_struct_tensor=True`` is passed to ``__init__``.
++    spectral_encoder : Optional[TensorSpectralEncoder]
++        A11 tensor-spectral encoder. ``None`` unless
++        ``use_spectral_tensor=True`` is passed to ``__init__``.
+     """
+ 
+     def __init__(
+         self,
+         *args,
+         use_struct_tensor: bool = False,
+         use_ms_struct_tensor: bool = False,
++        use_spectral_tensor: bool = False,
+         **kwargs,
+     ) -> None:
+         super().__init__(*args, **kwargs)
+@@ -103,6 +112,12 @@
+         self.ms_struct_encoder: Optional[MultiScaleStructTensorEncoder] = None
+         if use_ms_struct_tensor:
+             self.ms_struct_encoder = MultiScaleStructTensorEncoder(
+                 time_embed_dim=time_embed_dim
+             )
++
++        # A11: tensor eigenvalue / spectral feature conditioning (optional).
++        self.spectral_encoder: Optional[TensorSpectralEncoder] = None
++        if use_spectral_tensor:
++            self.spectral_encoder = TensorSpectralEncoder(
++                time_embed_dim=time_embed_dim
++            )
+ 
+     def forward(
+         self,
+@@ -117,6 +132,7 @@
+         look_num: Optional[th.Tensor] = None,
+         struct_tensor: Optional[th.Tensor] = None,
+         struct_tensors: Optional[tuple[th.Tensor, th.Tensor, th.Tensor]] = None,
++        spectral_tensor: Optional[th.Tensor] = None,
+     ) -> th.Tensor:
+         """Apply the look-conditioned U-Net to an input batch.
+ 
+@@ -139,6 +155,9 @@
+         struct_tensors : tuple[th.Tensor, th.Tensor, th.Tensor], optional
+             A10 multi-scale structure tensors ``(s1, s2, s3)``, each
+             shape ``[B, 3, H, W]``. Used only if
+             ``self.ms_struct_encoder is not None``.
++        spectral_tensor : th.Tensor, optional
++            A11 spectral-feature tensor, shape ``[B, 12, H, W]``
++            (lambda1, lambda2, anisotropy, coherence per A10 scale).
++            Used only if ``self.spectral_encoder is not None``.
+ 
+         Returns
+         -------
+@@ -186,6 +205,10 @@
+         if self.ms_struct_encoder is not None and struct_tensors is not None:
+             emb = emb + self.ms_struct_encoder(struct_tensors)
+ 
++        # A11: tensor eigenvalue / spectral feature conditioning.
++        if self.spectral_encoder is not None and spectral_tensor is not None:
++            emb = emb + self.spectral_encoder(spectral_tensor)
++
+         # ------------------------------------------------------------------
+         # 2. U-Net forward pass — identical to upstream UNetModel.forward.
+         # ------------------------------------------------------------------

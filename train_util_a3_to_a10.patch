@@ -1,0 +1,42 @@
+--- a/guided_diffusion/train_util.py
++++ b/guided_diffusion/train_util.py
+@@ -1,4 +1,5 @@
+ # train_util.py — A3 → A10 diff
++# Only run_loop() is changed.  All other methods are untouched.
+ 
+ # Context: in A3, run_loop() unpacks a 5-tuple from StructTensorDataset:
+ #   clean_tensor, noisy_tensor, image_filename, look_num, struct_tensor
+@@ -7,6 +8,9 @@
+ #   model_kwargs = {'noisy': noisy_tensor, 'look_num': look_num,
+ #                   'struct_tensor': struct_tensor}
+ #
++# In A10, run_loop() unpacks a 7-tuple from MultiScaleStructTensorDataset:
++#   clean_tensor, noisy_tensor, image_filename, look_num, st1, st2, st3
++# and sets:
++#   model_kwargs = {'noisy': noisy_tensor, 'look_num': look_num,
++#                   'struct_tensors': (st1, st2, st3)}
+ 
+@@ -101,16 +105,16 @@ class TrainLoop:
+     def run_loop(self):
+         ...
+-            clean_tensor, noisy_tensor, image_filename, look_num, struct_tensor = next(train_generator)
++            clean_tensor, noisy_tensor, image_filename, look_num, st1, st2, st3 = next(train_generator)
+             noisy_tensor = noisy_tensor.to(dist_util.dev())
+             clean_tensor = clean_tensor.to(dist_util.dev())
++            st1 = st1.to(dist_util.dev())
++            st2 = st2.to(dist_util.dev())
++            st3 = st3.to(dist_util.dev())
+             look_num = look_num.to(dist_util.dev())
+ 
+-            model_kwargs = {
+-                'noisy': noisy_tensor,
+-                'look_num': look_num,
+-                'struct_tensor': struct_tensor,
+-            }
++            model_kwargs = {
++                'noisy': noisy_tensor,
++                'look_num': look_num,
++                'struct_tensors': (st1, st2, st3),
++            }
+ 
+             net_loss += self.run_step(clean_tensor, model_kwargs)
