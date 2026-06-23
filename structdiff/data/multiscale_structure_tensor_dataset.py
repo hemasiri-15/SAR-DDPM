@@ -68,7 +68,7 @@ if _STRUCTDIFF_DIR not in sys.path:
     sys.path.insert(0, _STRUCTDIFF_DIR)
 
 from data.struct_tensor_dataset import StructTensorDataset          # noqa: E402
-from utils.structure_tensor_multiscale import (                     # noqa: E402
+from structdiff.utils.multiscale_structure_tensor import (          # noqa: E402
     compute_structure_tensor_multiscale,
     DEFAULT_SIGMAS,
 )

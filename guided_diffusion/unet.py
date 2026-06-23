@@ -19,9 +19,11 @@ from .nn import (
     timestep_embedding,
 )
 
-from structdiff.conditioning.struct_tensor_encoder import StructTensorEncoder
-from structdiff.conditioning.ms_struct_tensor_encoder import MultiScaleStructTensorEncoder
-from structdiff.conditioning.tensor_spectral_encoder import TensorSpectralEncoder
+from structdiff.conditioning.structure_tensor_encoder import StructTensorEncoder
+from structdiff.conditioning.multiscale_structure_tensor_encoder import (
+    MultiScaleStructTensorEncoder,
+)
+from structdiff.conditioning.spectral_tensor_encoder import TensorSpectralEncoder
 from structdiff.conditioning.wavelet_encoder import WaveletEncoder
 
 class AttentionPool2d(nn.Module):

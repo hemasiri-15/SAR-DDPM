@@ -55,10 +55,10 @@ from typing import Optional, Tuple
 
 import torch
 
-from structdiff.data.multiscale_struct_tensor_dataset import (
+from structdiff.data.multiscale_structure_tensor_dataset import (
     MultiScaleStructTensorDataset,
 )
-from structdiff.utils.tensor_spectral_features import (
+from structdiff.utils.spectral_tensor_features import (
     compute_spectral_features_multiscale,
     _EPS,
     _DEFAULT_CLIP_RANGE,

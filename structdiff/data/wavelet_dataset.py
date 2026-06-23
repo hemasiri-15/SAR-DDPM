@@ -162,7 +162,7 @@ from structdiff.utils.wavelet_features import (
     DEFAULT_WAVELET,
     NUM_SUBBANDS,
 )
-from structdiff.utils.tensor_spectral_features import (
+from structdiff.utils.spectral_tensor_features import (
     _EPS,
     _DEFAULT_CLIP_RANGE,
 )

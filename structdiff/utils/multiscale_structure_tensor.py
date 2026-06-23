@@ -40,7 +40,7 @@ from typing import List, Tuple
 import numpy as np
 
 # Re-use A3 computation — no code duplication.
-from utils.structure_tensor import compute_structure_tensor  # noqa: E402
+from .structure_tensor import compute_structure_tensor  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
