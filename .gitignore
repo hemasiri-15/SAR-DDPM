@@ -1,4 +1,30 @@
-weights/
-logs/
+# Python cache
 __pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+venv/
+.env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Logs
+*.log
+
+# Model checkpoints
+*.pt
+*.pth
+*.ckpt
+
+# Outputs
+outputs/
+results/
+
+# OS files
+.DS_Store
+Thumbs.dbweights/
+logs/
+
 *.egg-info
