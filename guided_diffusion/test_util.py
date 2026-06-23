@@ -10,6 +10,7 @@ import torch.nn.functional as F
 from torchvision import transforms
 from skimage.metrics import peak_signal_noise_ratio as psnr
 from skimage.metrics import structural_similarity as ssim
+from structdiff.sampling.a26.learnable_cycle_spinning import LearnableCycleSpinning
 
 from torch.utils.data import DataLoader
 
@@ -106,6 +107,8 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
 
                 # Get number of cycle spins
                 N = int(np.ceil(num_rows / cycle_width) * np.ceil(num_cols / cycle_width))
+                lcs = LearnableCycleSpinning(num_shifts=N).to(device)
+                spin_outputs = []
 
                 # For each cycle (in both directions)
                 for row in range(0, num_rows, cycle_width):
