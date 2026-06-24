@@ -14,6 +14,14 @@ from .fp16_util import MixedPrecisionTrainer
 from .nn import update_ema
 from .resample import LossAwareSampler, UniformSampler
 from .test_util import evaluate
+from structdiff.losses.structure_consistency_loss import (
+    MultiScaleStructureConsistencyLoss,
+)
+
+from structdiff.losses.eps_intercept_hook import (
+    EpsInterceptHook,
+    reconstruct_x0,
+)
 
 # For ImageNet experiments, this was a good default value.
 # We found that the lg_loss_scale quickly climbed to
@@ -88,7 +96,7 @@ class TrainLoop:
             self.mp_trainer.master_params, lr=self.lr, weight_decay=self.weight_decay
         )
 
-        if self.resume_step:
+        if torch.cuda.is_available():
             self._load_optimizer_state()
             # Model was resumed, either due to a restart or a checkpoint
             # being specified at the command line.
@@ -121,6 +129,17 @@ class TrainLoop:
                 )
             self.use_ddp = False
             self.ddp_model = self.model
+
+        self.lambda_struct = 0.1
+
+        self.struct_loss_fn = MultiScaleStructureConsistencyLoss(
+            kernels=(3, 5, 9)
+        )
+
+        self.eps_hook = EpsInterceptHook(
+            self.ddp_model,
+            learn_sigma=self.learn_sigma,
+        )
 
     def _load_and_sync_parameters(self):
         if self.resume_checkpoint:
@@ -288,7 +307,7 @@ class TrainLoop:
                 val_time = time.perf_counter()
                 avg_psnr, avg_ssim, _, mse, max_psnr = evaluate(self.val_loader, self.diffusion, self.ddp_model, dist_util.dev(), images_folder)
                 net_val_time += time.perf_counter() - val_time
-                
+
                 logger.log(f"\tStep = {self.step:>5},  PSNR: {avg_psnr:5.2f},  SSIM: {avg_ssim:5.3f},  MSE: {mse:2.1e},  Loss: {(net_loss/(((self.step-1) % self.log_interval)+1)):2.2e},  Net training time: {(time.perf_counter() - start_time - net_val_time):.1f}s,  Net validation time: {net_val_time:.1f}s")
 
                 if best_psnr < avg_psnr:
@@ -330,7 +349,7 @@ class TrainLoop:
 
         net_loss = 0.0
 
-        for i in range(0, batch.shape[0], self.microbatch):            
+        for i in range(0, batch.shape[0], self.microbatch):
             micro = batch[i : i + self.microbatch].to(dist_util.dev())
             micro_cond = {
                 k : v[i : i + self.microbatch].to(dist_util.dev()) if isinstance(v, torch.Tensor) else v
@@ -341,7 +360,7 @@ class TrainLoop:
 
             compute_losses = functools.partial(
                 self.diffusion.training_losses,
-                self.ddp_model,
+                self.eps_hook,
                 micro,
                 t,
                 model_kwargs=micro_cond,
@@ -359,8 +378,26 @@ class TrainLoop:
                 )
 
             loss = (losses["loss"] * weights).mean()
+            x0_hat = reconstruct_x0(
+                self.eps_hook.last_x_t,
+                self.eps_hook.last_t,
+                self.eps_hook.last_eps_hat.float(),
+                self.diffusion.alphas_cumprod,
+            )
+
+            struct_loss = self.struct_loss_fn(
+                x_hat=x0_hat,
+                x_clean=micro.float().detach(),
+            )
+
+            loss = loss + self.lambda_struct * struct_loss
+
+            logger.logkv_mean(
+                "struct_loss",
+                struct_loss.item(),
+            )
             net_loss += loss
-            
+
             log_loss_dict(
                 self.diffusion, t, {k: v * weights for k, v in losses.items()}
             )
