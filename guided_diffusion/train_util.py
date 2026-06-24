@@ -18,6 +18,11 @@ from structdiff.losses.structure_consistency_loss import (
     MultiScaleStructureConsistencyLoss,
 )
 
+from structdiff.losses.edge_aware_loss import (       # A5
+    EdgeAwareLoss,
+    DEFAULT_LAMBDA_EDGE,
+)
+
 from structdiff.losses.eps_intercept_hook import (
     EpsInterceptHook,
     reconstruct_x0,
@@ -135,6 +140,16 @@ class TrainLoop:
         self.struct_loss_fn = MultiScaleStructureConsistencyLoss(
             kernels=(3, 5, 9)
         )
+
+        # A5 — Edge-Aware Loss
+        # lambda_edge is set below lambda_struct=0.1 because Sobel gradient
+        # magnitudes are naturally larger than structure tensor components,
+        # so a smaller weight prevents edge loss from dominating.
+        self.lambda_edge = DEFAULT_LAMBDA_EDGE   # 0.05; set 0.0 to disable
+        self.edge_loss_fn = EdgeAwareLoss(
+            alpha=0.6,   # weight on L1 gradient-magnitude term
+            beta=0.4,    # weight on directional (Gx / Gy) L1 term
+        ).to(dist_util.dev())
 
         self.eps_hook = EpsInterceptHook(
             self.ddp_model,
@@ -396,6 +411,20 @@ class TrainLoop:
                 "struct_loss",
                 struct_loss.item(),
             )
+
+            # ── A5: Edge-Aware Loss ────────────────────────────────────
+            # Reuses x0_hat already computed for A33 — zero extra UNet
+            # forward passes.  micro.float().detach() prevents the loss
+            # from computing gradients through the ground-truth path.
+            if self.lambda_edge > 0.0:
+                edge_loss = self.edge_loss_fn(
+                    x_pred=x0_hat,               # in autograd graph: x0_hat→eps_hat→UNet
+                    x_gt=micro.float().detach(), # GT detached: only x0_hat gets grads
+                )
+                loss = loss + self.lambda_edge * edge_loss
+                logger.logkv_mean("edge_loss", edge_loss.item())
+            # ── end A5 ────────────────────────────────────────────────
+
             net_loss += loss
 
             log_loss_dict(
@@ -498,4 +527,3 @@ def log_loss_dict(diffusion, ts, losses):
             quartile = int(4 * sub_t / diffusion.num_timesteps)
             logger.logkv_mean(f"{key}_q{quartile}", sub_loss)
     logger.dumpkvs()
-    
