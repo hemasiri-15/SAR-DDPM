@@ -32,7 +32,8 @@ from datasets import SARDataset
 sen12_sar_list_path = "../sen12/sar/sar_test_samples.txt"
 hrsid_sar_list_path = "../HRSID_png/inshore_images/sar_test_samples.txt"
 
-lpips_model = lpips.LPIPS(net='alex').cuda()
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+lpips_model = lpips.LPIPS(net='alex').to(device)
 
 def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False, cycle_width=0, log=False, test=False, use_ddim=False, sample_to_use="LAST"):
     sample_fn = (
