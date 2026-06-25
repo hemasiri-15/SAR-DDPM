@@ -10,9 +10,7 @@ import torch.nn.functional as F
 from torchvision import transforms
 from skimage.metrics import peak_signal_noise_ratio as psnr
 from skimage.metrics import structural_similarity as ssim
-from structdiff.sampling.cycle_spinning.factory import (
-    build_cycle_spinning,
-)
+from structdiff.sampling.cycle_spinning.learnable_cycle_spinning import LearnableCycleSpinning
 
 from torch.utils.data import DataLoader
 
@@ -93,16 +91,16 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
             clean_tensor, noisy_tensor, image_filename = data_tuple
             clean_tensor = clean_tensor.to(device)
             noisy_tensor = noisy_tensor.to(device)
-
+            
             # Reformat the images for metrics
             clean_image = ((clean_tensor + 1.0)* 127.5).clamp(0, 255.0)
             clean_image = torch.round(torch.mean(clean_image, dim=1)) / 255.0
             clean_image = clean_image.contiguous()
 
             batch_size = clean_tensor.shape[0]
-
+            
             batch_start = time.perf_counter()
-
+            
             if (cycle_spinning):
                 first = True
                 [_, _, num_rows, num_cols] = noisy_tensor.size()
@@ -110,11 +108,7 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
 
                 # Get number of cycle spins
                 N = int(np.ceil(num_rows / cycle_width) * np.ceil(num_cols / cycle_width))
-                aggregator = build_cycle_spinning(
-                    method="learnable",
-                    num_shifts=N,
-                ).to(device)
-
+                lcs = LearnableCycleSpinning(num_shifts=N).to(device)
                 spin_outputs = []
 
                 # For each cycle (in both directions)
