@@ -10,8 +10,13 @@ import torch.nn.functional as F
 from torchvision import transforms
 from skimage.metrics import peak_signal_noise_ratio as psnr
 from skimage.metrics import structural_similarity as ssim
-from structdiff.sampling.cycle_spinning.factory import (
-    build_cycle_spinning,
+from structdiff.sampling.cycle_spinning.engine import (
+    CycleSpinningEngine,
+    EngineConfig,
+    EngineResult,
+)
+from structdiff.sampling.cycle_spinning.learnable_cycle_spinning import (
+    LearnableCycleSpinning,
 )
 
 from torch.utils.data import DataLoader
