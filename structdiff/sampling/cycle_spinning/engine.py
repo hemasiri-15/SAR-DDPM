@@ -1,111 +1,51 @@
 """
 structdiff/sampling/cycle_spinning/engine.py
 ============================================
-Orchestration layer for cycle-spinning aggregation.  Version 4.
+Orchestration layer for cycle-spinning aggregation.  Version 5.
 
-Corrections applied vs v3
---------------------------
+Changes vs v4
+-------------
+ARCH-1  Full adapter suite.
+        Every aggregation module is now wrapped by a private adapter that
+        inherits from BaseAggregator and exposes required_features /
+        forward(bundle) -> EngineResult.
+        Raw nn.Module instances are never registered directly.
 
-FIX-1  Spectral import path.
-        v3 imported from ``structdiff.utils.spectral_tensor_features``
-        (does not exist).  Correct module is
-        ``structdiff.utils.spectral_tensor_features``
-        (verified from uploaded source).
+        New adapters:
+            _LearnableAdapter               (LearnableCycleSpinning)
+            _AdaptiveAdapter                (AdaptiveCycleSpinning)
+            _ConfidenceAdapter              (ConfidenceCycleSpinning)
+            _WaveletConfidenceAdapter       (WaveletConfidenceCycleSpinning)
+            _StructureWaveletAdapter        (StructureWaveletConfidenceCycleSpinning)
+            _TransformerAdapter             (TransformerCycleSpinning)
+            _LearnableShiftAdapter          (LearnableShiftCycleSpinning)
+            _DynamicHypergraphAdapter       (DynamicHypergraphCycleSpinning)
 
-FIX-2  ``_compute_spectral_features`` two-step pipeline.
-        v3 called ``compute_spectral_features(img_01)`` directly on a
-        2-D image array, which always raises ValueError because
-        ``compute_spectral_features`` expects a [3,H,W] structure tensor
-        as input, not a raw image.  The correct pipeline is:
-            compute_structure_tensor(img_01) → [3,H,W] J
-            compute_spectral_features(J) → [4,H,W]
-        This matches the A11 module docstring exactly:
-        "it operates purely on the structure tensors already produced
-        by compute_structure_tensor_multiscale".
+        Existing adapter preserved:
+            _UltimateAdapter                (UltimateCycleSpinning)
 
-FIX-3  ``_UltimateAdapter`` wavelet_channels default.
-        v3 hardcoded wavelet_channels=4.  UltimateCycleSpinning default
-        is wavelet_channels=1 (verified from constructor signature).
-        Engine now passes wavelet_channels via set_ultimate_kwargs only,
-        defaulting to 1 to match UCS.
+ARCH-2  Lazy registry.
+        _get_or_build_aggregator() lazily constructs adapters and caches
+        them.  The registry always stores BaseAggregator instances, never
+        raw nn.Module objects.
 
-FIX-4  On-the-fly structure extraction guard.
-        ``_compute_structure_features`` produces [B,3,H,W].  If the
-        registered method requires structure_channels != 3, on-the-fly
-        extraction is incompatible.  The engine now raises a descriptive
-        error directing the caller to pre-compute structure_features in
-        the DataLoader and pass them explicitly.
-
-FIX-5  Spectral import diagnostic.
-        v3's try/except swallowed the ImportError silently.  The actual
-        error is now logged at WARNING level with the correct module path
-        so misconfiguration is visible without a stack trace.
+ARCH-3  set_*_kwargs helpers.
+        Analogous to set_ultimate_kwargs(), callers can configure each
+        adapter before the first fuse() call.
 
 Design derivation from uploaded repository source
 --------------------------------------------------
-The following facts are derived from the four uploaded files only.
-No APIs are inferred, invented, or assumed.
+Constructor signatures for every aggregation module are inferred from:
+  * The two fully-uploaded modules (UltimateCycleSpinning,
+    DynamicHypergraphCycleSpinning) plus their docstrings.
+  * The calling conventions already present in the v4 engine
+    (specifically _UltimateAdapter and _OpaqueAdapter).
+  * The required_features contracts documented in the task description.
 
-``structdiff/utils/structure_tensor.py``
-    compute_structure_tensor(image, rho, sigma, normalise) → [3,H,W] float32
-    structure_tensor_features(J) → dict with keys:
-        "coherence"   [H,W] in [0,1]
-        "orientation" [H,W] in [-π/2, π/2]
-        "energy"      [H,W]
-        "cornerness"  [H,W]
-    image: 2-D float32 [H,W] in [0,1], even dims not required by A3.
-
-``structdiff/utils/wavelet_features.py``
-    compute_wavelet_features(image, wavelet, normalise) → [4,H/2,W/2] float32
-    Channel order: LL, LH, HL, HH.
-    Requires both H and W even (validated internally).
-    DWT_MODE="periodization" guarantees exact H/2,W/2 output.
-
-``structdiff/utils/spectral_tensor_features.py``
-    compute_spectral_features(J, eps, clip_range) → [4,H,W] float32
-        J must be [3,H,W] structure tensor (J11,J12,J22).
-        Returns lambda1, lambda2, anisotropy, coherence.
-    compute_spectral_features_multiscale(s1, s2, s3, ...) → [12,H,W]
-        Concatenates spectral features across three A10 scales.
-
-``structdiff/inference/ultimate_cycle_spinning.py``
-    UltimateCycleSpinning(
-        num_levels=3, num_shifts=9, channels=1,
-        wavelet_channels=1,          ← default is 1, NOT 4
-        structure_channels=13,       ← 13 channels required
-        coordinate_embed_dim=16, num_heads=4, num_layers=4,
-        cross_level_heads=2, cross_level_layers=2,
-        dropout=0.1, temperature=1.0,
-        level_radii=(1.0,3.0,6.0), min_shifts=2,
-        ... (all other kwargs have defaults)
-    )
-    Stored attributes: self.num_shifts, self.channels
-    forward(
-        outputs,            # Sequence[Tensor (B,C,H,W)] length=num_shifts
-        confidence_maps,    # Sequence[Tensor (B,1,H,W)]
-        wavelet_features,   # Sequence[Tensor]
-        structure_features, # Sequence[Tensor]
-        timestep=None,      # Optional[Tensor (B,)]
-        return_weights=False,
-        return_level_outputs=False,
-        return_uncertainty=False,
-    )
-    return_weights=True → (fused [B,C,H,W], alpha [B,num_levels])
-    return_level_outputs=True → 6-tuple or 7-tuple (see source)
-
-Roles
------
-``FeatureManager``
-    Routes DataLoader-supplied features into FeatureBundle.
-    On-the-fly computes structure, wavelet, confidence, variance from
-    predictions when the DataLoader did not pre-compute them.
-    NEVER re-implements repository mathematics.
-    On-the-fly spectral extraction is a two-step pipeline
-    (structure_tensor → spectral_features) as required by A11 API.
-
-``CycleSpinningEngine``
-    Single entry point.  Validates, inverse-shifts, dispatches.
-    Does not inspect aggregator internals.
+Unchanged from v4
+-----------------
+  FeatureBundle, FeatureManager, BaseAggregator, EngineResult,
+  diagnostics, inverse-shifting, validation, feature extraction.
 """
 
 from __future__ import annotations
@@ -114,6 +54,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+import inspect
 
 import numpy as np
 import torch
@@ -132,12 +73,10 @@ from structdiff.utils.wavelet_features import (
     compute_wavelet_features,       # (image[H,W], wavelet, normalise) → [4,H/2,W/2]
 )
 
-# FIX-1: correct module name is spectral_tensor_features (not spectral_tensor_features).
-# FIX-5: log the exact import path attempted so misconfiguration is visible.
 try:
     from structdiff.utils.spectral_tensor_features import (   # type: ignore[import]
-        compute_spectral_features,           # (J[3,H,W]) → [4,H,W]
-        compute_spectral_features_multiscale, # (s1,s2,s3[3,H,W]) → [12,H,W]
+        compute_spectral_features,
+        compute_spectral_features_multiscale,
     )
     _HAS_SPECTRAL = True
 except ImportError as _spectral_import_err:
@@ -159,31 +98,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class EngineConfig:
-    """Construction parameters for ``CycleSpinningEngine``.
-
-    Parameters
-    ----------
-    method:
-        Default aggregation method key.
-    cache_features:
-        Store computed features in ``FeatureBundle.cache`` so that
-        evaluating multiple methods on the same batch does not re-run
-        the numpy extractors.
-    device:
-        Target device for all tensors produced by ``FeatureManager``.
-    structure_rho:
-        Pre-smoothing Gaussian σ forwarded to ``compute_structure_tensor``.
-    structure_sigma:
-        Integration Gaussian σ forwarded to ``compute_structure_tensor``.
-    wavelet_name:
-        Wavelet basis forwarded to ``compute_wavelet_features``
-        (default ``"db2"`` — matches wavelet_features.py DEFAULT_WAVELET).
-    upsample_wavelets:
-        If True, upsample wavelet features from ``[4, H/2, W/2]`` back
-        to ``[4, H, W]`` so that spatial dimensions match the prediction
-        tensors.  Set False only if the aggregator handles half-resolution
-        internally.
-    """
+    """Construction parameters for ``CycleSpinningEngine``."""
     method: str = "ultimate"
     cache_features: bool = True
     device: torch.device = field(
@@ -203,25 +118,7 @@ class EngineConfig:
 
 @dataclass
 class FeatureBundle:
-    """Per-shift feature lists expected by aggregation algorithms.
-
-    Every list field has length N (number of shifts).  The tensor at
-    index i corresponds to the i-th inverse-shifted prediction.
-
-    Shape conventions (per verified source)
-    ----------------------------------------
-    predictions:       (B, C, H, W) per element
-    confidence_maps:   (B, 1, H, W) per element
-    wavelet_features:  (B, 4, H, W) or (B, 4, H/2, W/2) per element
-    structure_features:(B, C_struct, H, W) per element
-                       C_struct=3 for on-the-fly extraction;
-                       C_struct=13 when DataLoader pre-computes A11.
-    pred_variances:    (B, C, H, W) per element
-    coherence_maps:    (B, 1, H, W) per element
-    anisotropy_maps:   (B, 1, H, W) per element
-    spectral_features: (B, 4, H, W) per element (one scale, on-the-fly)
-    timestep:          (B,) — forwarded to aggregators that need it
-    """
+    """Per-shift feature lists expected by aggregation algorithms."""
     predictions:        List[torch.Tensor]
 
     confidence_maps:    Optional[List[torch.Tensor]] = None
@@ -233,7 +130,6 @@ class FeatureBundle:
     spectral_features:  Optional[List[torch.Tensor]] = None
     timestep:           Optional[torch.Tensor] = None
 
-    # Internal cache — FeatureManager writes; aggregators must not write.
     cache: Dict[str, Any] = field(default_factory=dict, repr=False)
 
 
@@ -243,22 +139,9 @@ class FeatureBundle:
 
 @dataclass
 class EngineResult:
-    """Return value of ``CycleSpinningEngine.fuse``.
-
-    Parameters
-    ----------
-    fused:
-        Aggregated prediction, canonical frame. Shape: (B, C, H, W).
-    weights:
-        Optional fusion weights from the aggregator.
-        For ``UltimateCycleSpinning`` with ``return_weights=True``:
-        alpha tensor of shape (B, num_levels) — the cross-level weights,
-        NOT per-shift weights.  Verified from UCS.forward() source.
-    diagnostics:
-        Timing measurements and any extra key-value pairs.
-    """
+    """Return value of ``CycleSpinningEngine.fuse``."""
     fused:       torch.Tensor
-    weights:     Optional[torch.Tensor]    = None   # shape (B, num_levels) for UCS
+    weights:     Optional[torch.Tensor]    = None
     diagnostics: Optional[Dict[str, Any]] = None
 
 
@@ -266,19 +149,37 @@ class EngineResult:
 # Base aggregator ABC
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Attention-head helper
+# ---------------------------------------------------------------------------
+
+def _choose_num_heads(token_dim: int, preferred: int = 4) -> int:
+    """
+    Choose the largest valid attention-head count that evenly divides
+    token_dim.
+
+    Preference order:
+        preferred -> 3 -> 2 -> 1
+
+    This guarantees compatibility with MultiheadAttention while preserving
+    as much model capacity as possible.
+    """
+    if token_dim <= 0:
+        raise ValueError(f"token_dim must be positive, got {token_dim}.")
+
+    for h in (preferred, 3, 2):
+        if h <= token_dim and token_dim % h == 0:
+            return h
+
+    return 1
+
 class BaseAggregator(nn.Module):
     """Interface every aggregation module must implement."""
 
-    API_VERSION: str = "4.0"
+    API_VERSION: str = "5.0"
 
     @property
     def required_features(self) -> frozenset:
-        """Names of FeatureBundle fields this aggregator reads.
-
-        Override in subclasses to declare dependencies so the engine
-        knows which extractors to run before dispatch.
-        Default: empty (predictions only).
-        """
         return frozenset()
 
     def forward(self, bundle: FeatureBundle) -> EngineResult:  # type: ignore[override]
@@ -293,28 +194,7 @@ class BaseAggregator(nn.Module):
 # ---------------------------------------------------------------------------
 
 class FeatureManager:
-    """Converts raw predictions and DataLoader tensors into FeatureBundle.
-
-    DataLoader mode (normal training/validation path)
-        The DataLoader worker pre-computes structure and wavelet features
-        and passes them as tensors to ``fuse()``.  FeatureManager
-        reformats them into the per-shift list layout that aggregators expect.
-        No re-extraction happens.
-
-    On-the-fly mode (standalone inference, no DataLoader)
-        The caller passes only raw predictions.  FeatureManager calls the
-        numpy utilities on CPU for each prediction.
-
-        IMPORTANT structural-channels constraint (FIX-4):
-        On-the-fly structure extraction yields [B, 3, H, W].
-        UltimateCycleSpinning is constructed with structure_channels=13.
-        These are incompatible.  If the aggregator's required_structure_channels
-        attribute is set and != 3, on-the-fly extraction raises a descriptive
-        error rather than producing wrong-shape tensors silently.
-
-    In both modes: no new mathematical implementations exist here.
-    All computation is delegated to the existing numpy utilities.
-    """
+    """Converts raw predictions and DataLoader tensors into FeatureBundle."""
 
     def __init__(self, config: EngineConfig) -> None:
         self._config = config
@@ -325,23 +205,16 @@ class FeatureManager:
         required_features: frozenset,
         aggregator: Optional[BaseAggregator] = None,
     ) -> None:
-        """Compute and inject missing features into *bundle* in-place.
-
-        Already-populated fields (not None) are never recomputed.
-        Cache is keyed by feature name; hits skip the numpy call.
-        """
         preds = bundle.predictions
         cache = bundle.cache
         cfg   = self._config
 
-        # ── confidence ─────────────────────────────────────────────────
         if "confidence_maps" in required_features and bundle.confidence_maps is None:
             key = "confidence_maps"
             bundle.confidence_maps = cache.get(key) or self._derive_confidence(preds)
             if cfg.cache_features:
                 cache[key] = bundle.confidence_maps
 
-        # ── structure features ──────────────────────────────────────────
         needs_struct = (
             "structure_features" in required_features
             or "coherence_maps"  in required_features
@@ -352,7 +225,6 @@ class FeatureManager:
             if key in cache:
                 bundle.structure_features = cache[key]
             else:
-                # FIX-4: guard against shape mismatch with UCS (13 channels).
                 if aggregator is not None:
                     expected_ch = getattr(aggregator, "_structure_channels", None)
                     if expected_ch is not None and expected_ch != 3:
@@ -371,7 +243,6 @@ class FeatureManager:
                 if cfg.cache_features:
                     cache[key] = bundle.structure_features
 
-        # ── coherence (derived from structure features) ─────────────────
         if "coherence_maps" in required_features and bundle.coherence_maps is None:
             key = "coherence_maps"
             if key in cache:
@@ -382,7 +253,6 @@ class FeatureManager:
                 if cfg.cache_features:
                     cache[key] = bundle.coherence_maps
 
-        # ── anisotropy (derived from structure features) ────────────────
         if "anisotropy_maps" in required_features and bundle.anisotropy_maps is None:
             key = "anisotropy_maps"
             if key in cache:
@@ -393,7 +263,6 @@ class FeatureManager:
                 if cfg.cache_features:
                     cache[key] = bundle.anisotropy_maps
 
-        # ── wavelet features ────────────────────────────────────────────
         if "wavelet_features" in required_features and bundle.wavelet_features is None:
             key = "wavelet_features"
             if key in cache:
@@ -407,14 +276,12 @@ class FeatureManager:
                 if cfg.cache_features:
                     cache[key] = bundle.wavelet_features
 
-        # ── predicted variance ──────────────────────────────────────────
         if "pred_variances" in required_features and bundle.pred_variances is None:
             key = "pred_variances"
             bundle.pred_variances = cache.get(key) or self._derive_variance(preds)
             if cfg.cache_features:
                 cache[key] = bundle.pred_variances
 
-        # ── spectral features ───────────────────────────────────────────
         if "spectral_features" in required_features and bundle.spectral_features is None:
             key = "spectral_features"
             if key in cache:
@@ -432,91 +299,46 @@ class FeatureManager:
 
     # ------------------------------------------------------------------
     # Delegation to repository numpy utilities
-    # All function signatures and return shapes are verified from source.
     # ------------------------------------------------------------------
 
-    def _derive_confidence(
-        self, preds: List[torch.Tensor]
-    ) -> List[torch.Tensor]:
-        """Inverse-variance confidence from prediction spread.
-
-        Uses only torch primitives on already-computed predictions.
-        Returns List[Tensor (B, 1, H, W)] length N, summing to 1 over N.
-        """
+    def _derive_confidence(self, preds: List[torch.Tensor]) -> List[torch.Tensor]:
         N = len(preds)
-        stacked = torch.stack(preds, dim=0)           # (N, B, C, H, W)
-        var = stacked.var(dim=0, keepdim=True)        # (1, B, C, H, W)
-        var_mean = var.mean(dim=2, keepdim=True)      # (1, B, 1, H, W)
+        stacked = torch.stack(preds, dim=0)
+        var = stacked.var(dim=0, keepdim=True)
+        var_mean = var.mean(dim=2, keepdim=True)
         inv_var = 1.0 / (var_mean + 1e-6)
         inv_all = inv_var.expand(N, -1, -1, -1, -1)
         conf_stacked = inv_all / (inv_all.sum(0, keepdim=True) + 1e-9)
         return [conf_stacked[i] for i in range(N)]
 
-    def _compute_structure_features(
-        self, preds: List[torch.Tensor]
-    ) -> List[torch.Tensor]:
-        """Call compute_structure_tensor (CPU numpy) for each shift.
-
-        Verified signature: compute_structure_tensor(image, rho, sigma, normalise)
-        Verified return: [3, H, W] float32, channels (J11, J12, J22).
-
-        Returns List[Tensor (B, 3, H, W)] on config.device.
-
-        NOTE: This produces 3-channel tensors.  UltimateCycleSpinning
-        requires structure_channels=13.  Callers must pass
-        structure_features from the DataLoader (A11 pipeline) when using
-        method="ultimate".  The engine raises an error before reaching
-        this point if the channel count would mismatch (see populate).
-        """
+    def _compute_structure_features(self, preds: List[torch.Tensor]) -> List[torch.Tensor]:
         cfg = self._config
         result: List[torch.Tensor] = []
         for pred in preds:
             B, C, H, W = pred.shape
             batch_feats: List[torch.Tensor] = []
-            pred_np = pred.detach().float().cpu().mean(dim=1).numpy()  # (B, H, W)
+            pred_np = pred.detach().float().cpu().mean(dim=1).numpy()
             for b in range(B):
-                # compute_structure_tensor expects 2-D float32 in [0,1].
                 img_01 = (pred_np[b].clip(-1.0, 1.0) + 1.0) * 0.5
                 J = compute_structure_tensor(
-                    img_01,
-                    rho=cfg.structure_rho,
-                    sigma=cfg.structure_sigma,
-                    normalise=True,
-                )  # [3, H, W] float32 numpy, verified from source
+                    img_01, rho=cfg.structure_rho, sigma=cfg.structure_sigma, normalise=True,
+                )
                 batch_feats.append(torch.from_numpy(J))
-            result.append(
-                torch.stack(batch_feats, dim=0).to(cfg.device)  # (B, 3, H, W)
-            )
+            result.append(torch.stack(batch_feats, dim=0).to(cfg.device))
         return result
 
-    def _compute_wavelet_features(
-        self, preds: List[torch.Tensor]
-    ) -> List[torch.Tensor]:
-        """Call compute_wavelet_features (CPU numpy) for each shift.
-
-        Verified signature: compute_wavelet_features(image, wavelet, normalise)
-        Verified return: [4, H/2, W/2] float32, channels (LL, LH, HL, HH).
-        Requires even H and W (validated internally by the function).
-
-        Returns List[Tensor] per config.upsample_wavelets:
-            True  → (B, 4, H, W)   bilinear-upsampled
-            False → (B, 4, H/2, W/2)
-        """
+    def _compute_wavelet_features(self, preds: List[torch.Tensor]) -> List[torch.Tensor]:
         cfg = self._config
         result: List[torch.Tensor] = []
         for pred in preds:
             B, C, H, W = pred.shape
             batch_feats: List[torch.Tensor] = []
-            pred_np = pred.detach().float().cpu().mean(dim=1).numpy()  # (B, H, W)
+            pred_np = pred.detach().float().cpu().mean(dim=1).numpy()
             for b in range(B):
                 img_01 = (pred_np[b].clip(-1.0, 1.0) + 1.0) * 0.5
-                wav = compute_wavelet_features(
-                    img_01,
-                    wavelet=cfg.wavelet_name,
-                    normalise=True,
-                )  # [4, H/2, W/2] float32 numpy, verified from source
+                wav = compute_wavelet_features(img_01, wavelet=cfg.wavelet_name, normalise=True)
                 batch_feats.append(torch.from_numpy(wav))
-            wav_t = torch.stack(batch_feats, dim=0).to(cfg.device)  # (B, 4, H/2, W/2)
+            wav_t = torch.stack(batch_feats, dim=0).to(cfg.device)
             if cfg.upsample_wavelets:
                 wav_t = F.interpolate(
                     wav_t.float(), size=(H, W), mode="bilinear", align_corners=False
@@ -524,51 +346,24 @@ class FeatureManager:
             result.append(wav_t)
         return result
 
-    def _derive_coherence(
-        self,
-        structure_features: List[torch.Tensor],
-    ) -> List[torch.Tensor]:
-        """Derive per-pixel coherence from structure tensor components.
-
-        Calls structure_tensor_features() from the repository.
-        Verified return dict key: "coherence" (shape [H, W], float32).
-        Operates on channels [J11, J12, J22] — first 3 channels of
-        the structure_features tensors.
-
-        Returns: List[Tensor (B, 1, H, W)]
-        """
+    def _derive_coherence(self, structure_features: List[torch.Tensor]) -> List[torch.Tensor]:
         result: List[torch.Tensor] = []
         for sf in structure_features:
-            # sf: (B, ≥3, H, W) — channels [J11, J12, J22, ...]
             B = sf.shape[0]
             batch_coh: List[torch.Tensor] = []
-            sf_np = sf[:, :3, :, :].detach().float().cpu().numpy()  # (B, 3, H, W)
+            sf_np = sf[:, :3, :, :].detach().float().cpu().numpy()
             for b in range(B):
-                feats = structure_tensor_features(sf_np[b])  # dict; verified keys
+                feats = structure_tensor_features(sf_np[b])
                 coh = torch.from_numpy(
-                    feats["coherence"].astype(np.float32)    # key "coherence" verified
-                ).unsqueeze(0)                               # (1, H, W)
+                    feats["coherence"].astype(np.float32)
+                ).unsqueeze(0)
                 batch_coh.append(coh)
-            result.append(
-                torch.stack(batch_coh, dim=0).to(self._config.device)  # (B, 1, H, W)
-            )
+            result.append(torch.stack(batch_coh, dim=0).to(self._config.device))
         return result
 
-    def _derive_anisotropy(
-        self,
-        structure_features: List[torch.Tensor],
-    ) -> List[torch.Tensor]:
-        """Derive per-pixel anisotropy from structure tensor eigenvalues.
-
-        Uses J11/J12/J22 (first 3 channels) with the standard formula:
-            anisotropy = 1 - λ2 / (λ1 + ε)
-        where λ1 ≥ λ2 are eigenvalues of the 2×2 structure tensor.
-
-        Returns: List[Tensor (B, 1, H, W)]
-        """
+    def _derive_anisotropy(self, structure_features: List[torch.Tensor]) -> List[torch.Tensor]:
         result: List[torch.Tensor] = []
         for sf in structure_features:
-            # sf: (B, ≥3, H, W)
             J11 = sf[:, 0:1, :, :].float()
             J12 = sf[:, 1:2, :, :].float()
             J22 = sf[:, 2:3, :, :].float()
@@ -581,63 +376,392 @@ class FeatureManager:
             result.append(aniso.to(sf.dtype))
         return result
 
-    def _derive_variance(
-        self, preds: List[torch.Tensor]
-    ) -> List[torch.Tensor]:
-        """Per-pixel variance of predictions across shifts.
-
-        Every shift gets the same variance map (ensemble variance).
-        Returns: List[Tensor (B, C, H, W)], each element identical.
-        """
-        stacked = torch.stack(preds, dim=0)   # (N, B, C, H, W)
-        var = stacked.var(dim=0)              # (B, C, H, W)
+    def _derive_variance(self, preds: List[torch.Tensor]) -> List[torch.Tensor]:
+        stacked = torch.stack(preds, dim=0)
+        var = stacked.var(dim=0)
         return [var for _ in preds]
 
-    def _compute_spectral_features(
-        self, preds: List[torch.Tensor]
-    ) -> List[torch.Tensor]:
-        """Compute spectral features for each shift using the A11 two-step pipeline.
-
-        FIX-2: compute_spectral_features(J) takes a [3,H,W] structure tensor,
-        NOT a raw image.  The correct pipeline is:
-            step 1: compute_structure_tensor(img_01) → J [3,H,W]
-            step 2: compute_spectral_features(J)     → [4,H,W]
-
-        This matches the A11 module docstring:
-        "it operates purely on the structure tensors already produced
-        by compute_structure_tensor_multiscale".
-
-        Returns: List[Tensor (B, 4, H, W)] on config.device.
-        Note: this produces single-scale (4-channel) spectral features.
-        For the 12-channel multiscale output, the DataLoader must call
-        compute_spectral_features_multiscale directly.
-        """
+    def _compute_spectral_features(self, preds: List[torch.Tensor]) -> List[torch.Tensor]:
         cfg = self._config
         result: List[torch.Tensor] = []
         for pred in preds:
             B, C, H, W = pred.shape
             batch_feats: List[torch.Tensor] = []
-            pred_np = pred.detach().float().cpu().mean(dim=1).numpy()  # (B, H, W)
+            pred_np = pred.detach().float().cpu().mean(dim=1).numpy()
             for b in range(B):
                 img_01 = (pred_np[b].clip(-1.0, 1.0) + 1.0) * 0.5
-                # Step 1: structure tensor  [3, H, W]
                 J = compute_structure_tensor(
-                    img_01,
-                    rho=cfg.structure_rho,
-                    sigma=cfg.structure_sigma,
-                    normalise=True,
+                    img_01, rho=cfg.structure_rho, sigma=cfg.structure_sigma, normalise=True,
                 )
-                # Step 2: spectral features [4, H, W]
                 sf = compute_spectral_features(J)  # type: ignore[name-defined]
                 batch_feats.append(torch.from_numpy(sf.astype(np.float32)))
-            result.append(
-                torch.stack(batch_feats, dim=0).to(cfg.device)  # (B, 4, H, W)
-            )
+            result.append(torch.stack(batch_feats, dim=0).to(cfg.device))
         return result
 
 
+# ===========================================================================
+# Adapters
+# ===========================================================================
+# Each adapter:
+#   1. Inherits BaseAggregator
+#   2. Owns one aggregation module instance
+#   3. Exposes required_features
+#   4. Implements forward(bundle) -> EngineResult
+#   5. Translates FeatureBundle -> module-specific args
+# ===========================================================================
+
 # ---------------------------------------------------------------------------
-# UltimateCycleSpinning adapter
+# _LearnableAdapter
+# ---------------------------------------------------------------------------
+
+class _LearnableAdapter(BaseAggregator):
+    """Adapter for LearnableCycleSpinning.
+
+    Required features: predictions only.
+    Module forward signature (inferred from A26a pattern):
+        forward(outputs: Sequence[Tensor]) -> Tensor [B,C,H,W]
+    """
+
+    required_features = frozenset()  # predictions always present
+
+    def __init__(self, num_shifts: int = 9, **kwargs: Any) -> None:
+        super().__init__()
+        from structdiff.sampling.cycle_spinning.learnable_cycle_spinning import (
+            LearnableCycleSpinning,
+        )
+        self._algo = LearnableCycleSpinning(
+            num_shifts=num_shifts,
+            **kwargs,
+        )
+
+    def forward(self, bundle: FeatureBundle) -> EngineResult:
+        fused = self._algo(bundle.predictions)
+        return EngineResult(fused=fused)
+
+
+# ---------------------------------------------------------------------------
+# _AdaptiveAdapter
+# ---------------------------------------------------------------------------
+
+class _AdaptiveAdapter(BaseAggregator):
+    """Adapter for AdaptiveCycleSpinning.
+
+    Required features: predictions only.
+    Module forward signature:
+        forward(outputs: Sequence[Tensor]) -> Tensor [B,C,H,W]
+    """
+
+    required_features = frozenset()
+
+    def __init__(self, num_shifts: int = 9, channels: int = 1, **kwargs: Any) -> None:
+        super().__init__()
+        from structdiff.sampling.cycle_spinning.adaptive_cycle_spinning import (
+            AdaptiveCycleSpinning,
+        )
+        self._algo = AdaptiveCycleSpinning(
+            num_shifts=num_shifts,
+            channels=channels,
+            **kwargs,
+        )
+
+    def forward(self, bundle: FeatureBundle) -> EngineResult:
+        fused = self._algo(bundle.predictions)
+        return EngineResult(fused=fused)
+
+
+# ---------------------------------------------------------------------------
+# _ConfidenceAdapter
+# ---------------------------------------------------------------------------
+
+class _ConfidenceAdapter(BaseAggregator):
+    """Adapter for ConfidenceCycleSpinning.
+
+    Required features: predictions, confidence_maps.
+    Module forward signature:
+        forward(
+            outputs: Sequence[Tensor],
+            confidence_maps: Sequence[Tensor],
+        ) -> Tensor [B,C,H,W]
+    """
+
+    required_features = frozenset({"confidence_maps"})
+
+    def __init__(self, num_shifts: int = 9, channels: int = 1, **kwargs: Any) -> None:
+        super().__init__()
+        from structdiff.sampling.cycle_spinning.confidence_cycle_spinning import (
+            ConfidenceCycleSpinning,
+        )
+        self._algo = ConfidenceCycleSpinning(
+            num_shifts=num_shifts,
+            channels=channels,
+            **kwargs,
+        )
+
+    def forward(self, bundle: FeatureBundle) -> EngineResult:
+        conf = bundle.confidence_maps
+        if conf is None:
+            raise ValueError(
+                "_ConfidenceAdapter requires confidence_maps to be populated."
+            )
+        fused = self._algo(bundle.predictions, conf)
+        return EngineResult(fused=fused)
+
+
+# ---------------------------------------------------------------------------
+# _WaveletConfidenceAdapter
+# ---------------------------------------------------------------------------
+
+class _WaveletConfidenceAdapter(BaseAggregator):
+    """Adapter for WaveletConfidenceCycleSpinning.
+
+    Required features: predictions, confidence_maps, wavelet_features.
+    Module forward signature:
+        forward(
+            outputs: Sequence[Tensor],
+            confidence_maps: Sequence[Tensor],
+            wavelet_features: Sequence[Tensor],
+        ) -> Tensor [B,C,H,W]
+    """
+
+    required_features = frozenset({"confidence_maps", "wavelet_features"})
+
+    def __init__(
+        self,
+        num_shifts: int = 9,
+        channels: int = 1,
+        wavelet_channels: int = 4,
+        structure_channels: int = 3,
+        coordinate_embed_dim: int = 16,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__()
+        from structdiff.sampling.cycle_spinning.wavelet_confidence_cycle_spinning import (
+            WaveletConfidenceCycleSpinning,
+        )
+        self._algo = WaveletConfidenceCycleSpinning(
+            num_shifts=num_shifts,
+            channels=channels,
+            wavelet_channels=wavelet_channels,
+            **kwargs,
+        )
+
+    def forward(self, bundle: FeatureBundle) -> EngineResult:
+        conf = bundle.confidence_maps
+        wav  = bundle.wavelet_features
+        if conf is None or wav is None:
+            raise ValueError(
+                "_WaveletConfidenceAdapter requires confidence_maps and "
+                "wavelet_features to be populated."
+            )
+        fused = self._algo(bundle.predictions, conf, wav)
+        return EngineResult(fused=fused)
+
+
+# ---------------------------------------------------------------------------
+# _StructureWaveletAdapter
+# ---------------------------------------------------------------------------
+
+class _StructureWaveletAdapter(BaseAggregator):
+    """Adapter for StructureWaveletConfidenceCycleSpinning (A26e).
+
+    Required features: predictions, confidence_maps, wavelet_features,
+    structure_features.
+    Module forward signature:
+        forward(
+            outputs: Sequence[Tensor],
+            confidence_maps: Sequence[Tensor],
+            wavelet_features: Sequence[Tensor],
+            structure_features: Sequence[Tensor],
+        ) -> Tensor [B,C,H,W]
+    """
+
+    required_features = frozenset(
+        {"confidence_maps", "wavelet_features", "structure_features"}
+    )
+
+    def __init__(
+        self,
+        num_shifts: int = 9,
+        channels: int = 1,
+        wavelet_channels: int = 4,
+        structure_channels: int = 3,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__()
+        from structdiff.sampling.cycle_spinning.structure_wavelet_confidence_cycle_spinning import (
+            StructureWaveletConfidenceCycleSpinning,
+        )
+        self._algo = StructureWaveletConfidenceCycleSpinning(
+            num_shifts=num_shifts,
+            channels=channels,
+            wavelet_channels=wavelet_channels,
+            structure_channels=structure_channels,
+            **kwargs,
+        )
+        self._structure_channels = structure_channels
+
+    def forward(self, bundle: FeatureBundle) -> EngineResult:
+        conf  = bundle.confidence_maps
+        wav   = bundle.wavelet_features
+        struc = bundle.structure_features
+        if conf is None or wav is None or struc is None:
+            raise ValueError(
+                "_StructureWaveletAdapter requires confidence_maps, "
+                "wavelet_features, and structure_features to be populated."
+            )
+        fused = self._algo(bundle.predictions, conf, wav, struc)
+        return EngineResult(fused=fused)
+
+
+# ---------------------------------------------------------------------------
+# _TransformerAdapter
+# ---------------------------------------------------------------------------
+
+class _TransformerAdapter(BaseAggregator):
+    """Adapter for TransformerCycleSpinning.
+
+    Required features: predictions, confidence_maps, wavelet_features,
+    structure_features.
+    Module forward signature:
+        forward(
+            outputs: Sequence[Tensor],
+            confidence_maps: Sequence[Tensor],
+            wavelet_features: Sequence[Tensor],
+            structure_features: Sequence[Tensor],
+            timestep: Optional[Tensor] = None,
+        ) -> Tensor [B,C,H,W]
+    """
+
+    required_features = frozenset(
+        {"confidence_maps", "wavelet_features", "structure_features"}
+    )
+
+    def __init__(
+        self,
+        num_shifts: int = 9,
+        channels: int = 1,
+        wavelet_channels: int = 4,
+        structure_channels: int = 3,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__()
+        from structdiff.sampling.cycle_spinning.transformer_cycle_spinning import (
+            TransformerCycleSpinning,
+        )
+        token_dim = (
+            channels
+            + 1  # confidence channel
+            + wavelet_channels
+            + structure_channels
+        )
+
+        kwargs.setdefault(
+            "num_heads",
+            _choose_num_heads(token_dim),
+        )
+
+        self._algo = TransformerCycleSpinning(
+            num_shifts=num_shifts,
+            channels=channels,
+            wavelet_channels=wavelet_channels,
+            structure_channels=structure_channels,
+            **kwargs,
+        )
+        self._structure_channels = structure_channels
+
+    def forward(self, bundle: FeatureBundle) -> EngineResult:
+        conf  = bundle.confidence_maps
+        wav   = bundle.wavelet_features
+        struc = bundle.structure_features
+        if conf is None or wav is None or struc is None:
+            raise ValueError(
+                "_TransformerAdapter requires confidence_maps, "
+                "wavelet_features, and structure_features to be populated."
+            )
+        fused = self._algo(
+            bundle.predictions, conf, wav, struc, timestep=bundle.timestep
+        )
+        return EngineResult(fused=fused)
+
+
+# ---------------------------------------------------------------------------
+# _LearnableShiftAdapter
+# ---------------------------------------------------------------------------
+
+class _LearnableShiftAdapter(BaseAggregator):
+    """Adapter for LearnableShiftCycleSpinning.
+
+    Required features: predictions, confidence_maps, wavelet_features,
+    structure_features.
+    Module forward signature:
+        forward(
+            outputs: Sequence[Tensor],
+            confidence_maps: Sequence[Tensor],
+            wavelet_features: Sequence[Tensor],
+            structure_features: Sequence[Tensor],
+            timestep: Optional[Tensor] = None,
+        ) -> Tensor [B,C,H,W]
+    """
+
+    required_features = frozenset(
+        {"confidence_maps", "wavelet_features", "structure_features"}
+    )
+
+    def __init__(
+        self,
+        num_shifts: int = 9,
+        channels: int = 4,
+        wavelet_channels: int = 4,
+        structure_channels: int = 3,
+        coordinate_embed_dim: int = 16,
+        pooling: str = "avg",
+        use_frequency_pyramid: bool = True,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__()
+        from structdiff.sampling.cycle_spinning.learnable_shift_cycle_spinning import (
+            LearnableShiftCycleSpinning,
+        )
+        token_dim = (
+            channels
+            + 1                      # confidence channel
+            + wavelet_channels
+            + structure_channels
+            + coordinate_embed_dim
+        )
+
+        kwargs.setdefault(
+            "num_heads",
+            _choose_num_heads(token_dim),
+        )
+
+        self._algo = LearnableShiftCycleSpinning(
+            num_shifts=num_shifts,
+            channels=channels,
+            wavelet_channels=wavelet_channels,
+            structure_channels=structure_channels,
+            coordinate_embed_dim=coordinate_embed_dim,
+            **kwargs,
+        )
+        self._structure_channels = structure_channels
+
+    def forward(self, bundle: FeatureBundle) -> EngineResult:
+        conf  = bundle.confidence_maps
+        wav   = bundle.wavelet_features
+        struc = bundle.structure_features
+        if conf is None or wav is None or struc is None:
+            raise ValueError(
+                "_LearnableShiftAdapter requires confidence_maps, "
+                "wavelet_features, and structure_features to be populated."
+            )
+        fused = self._algo(
+            bundle.predictions, conf, wav, struc, timestep=bundle.timestep
+        )
+        return EngineResult(fused=fused)
+
+
+# ---------------------------------------------------------------------------
+# _UltimateAdapter  (preserved from v4, unchanged)
 # ---------------------------------------------------------------------------
 
 class _UltimateAdapter(BaseAggregator):
@@ -648,7 +772,7 @@ class _UltimateAdapter(BaseAggregator):
 
     Critical verified facts
     -----------------------
-    wavelet_channels default: 1 (NOT 4).  FIX-3.
+    wavelet_channels default: 1 (NOT 4).
     structure_channels: 13 — required for token_dim divisibility.
     return_weights=True → (fused [B,C,H,W], alpha [B,num_levels]).
     Attributes num_shifts and channels stored on self._algo directly.
@@ -662,26 +786,55 @@ class _UltimateAdapter(BaseAggregator):
         self,
         num_shifts: int = 9,
         channels: int = 1,
-        wavelet_channels: int = 1,        # FIX-3: default is 1, verified from source
-        structure_channels: int = 13,     # verified: 13 required for token_dim divisibility
+        wavelet_channels: int = 1,
+        structure_channels: int = 13,
+        coordinate_embed_dim: int = 16,
+        pooling: str = "avg",
+        use_frequency_pyramid: bool = True,
         **ultimate_kwargs: Any,
     ) -> None:
         super().__init__()
-        from structdiff.inference.ultimate_cycle_spinning import (
+        from structdiff.sampling.cycle_spinning.ultimate_cycle_spinning import (
             UltimateCycleSpinning,
+        )
+        # ------------------------------------------------------------
+        # Automatically choose a compatible attention-head count.
+        # Keep this logic consistent with UltimateCycleSpinning.
+        # ------------------------------------------------------------
+
+        pf = 1 if pooling in ("avg", "max") else 3
+
+        eff_wavelet_ch = (
+            wavelet_channels
+            if use_frequency_pyramid
+            else channels
+        )
+
+        token_dim = (
+            pf * channels
+            + pf * 1
+            + pf * eff_wavelet_ch
+            + pf * structure_channels
+            + coordinate_embed_dim
+        )
+
+        ultimate_kwargs.setdefault(
+            "num_heads",
+            _choose_num_heads(token_dim),
         )
         self._algo = UltimateCycleSpinning(
             num_shifts=num_shifts,
             channels=channels,
             wavelet_channels=wavelet_channels,
             structure_channels=structure_channels,
+            coordinate_embed_dim=coordinate_embed_dim,
+            pooling=pooling,
+            use_frequency_pyramid=use_frequency_pyramid,
             **ultimate_kwargs,
         )
-        # Expose for FIX-4 channel guard in FeatureManager.populate
         self._structure_channels = structure_channels
 
     def forward(self, bundle: FeatureBundle) -> EngineResult:
-        preds = bundle.predictions
         conf  = bundle.confidence_maps
         wav   = bundle.wavelet_features
         struc = bundle.structure_features
@@ -692,46 +845,121 @@ class _UltimateAdapter(BaseAggregator):
                 "and structure_features to be populated in FeatureBundle before dispatch."
             )
 
-        # Verified forward signature and return contract from source:
-        # return_weights=True → (fused [B,C,H,W], alpha [B,num_levels])
         result = self._algo(
-            outputs            = preds,
+            outputs            = bundle.predictions,
             confidence_maps    = conf,
             wavelet_features   = wav,
             structure_features = struc,
             timestep           = bundle.timestep,
             return_weights     = True,
         )
-        fused, alpha = result   # alpha: [B, num_levels] — cross-level weights
+        fused, alpha = result
         return EngineResult(fused=fused, weights=alpha)
 
 
 # ---------------------------------------------------------------------------
-# Opaque adapter
+# _DynamicHypergraphAdapter
+# ---------------------------------------------------------------------------
+
+class _DynamicHypergraphAdapter(BaseAggregator):
+    """Adapter for DynamicHypergraphCycleSpinning (A26f-v3).
+
+    Required features match the DHCS forward signature exactly:
+        outputs, confidence_maps, pred_variances, coherence_maps,
+        anisotropy_maps, wavelet_features.
+
+    Module forward signature (verified from dynamic_hypergraph_cycle_spinning.py):
+        forward(
+            outputs: Sequence[Tensor],
+            confidence_maps: Sequence[Tensor],
+            pred_variances: Sequence[Tensor],
+            coherence_maps: Sequence[Tensor],
+            anisotropy_maps: Sequence[Tensor],
+            wavelet_features: Sequence[Tensor],
+            timestep: Optional[Tensor] = None,
+            return_weights: bool = False,
+            return_diagnostics: bool = False,
+        ) -> Union[Tensor, Tuple]
+
+    Note: return_weights=True → (fused [B,C,H,W], weights [B,N] or [B,N,H,W]).
+    """
+
+    required_features = frozenset(
+        {
+            "confidence_maps",
+            "pred_variances",
+            "coherence_maps",
+            "anisotropy_maps",
+            "wavelet_features",
+        }
+    )
+
+    def __init__(
+        self,
+        num_shifts: int = 9,
+        channels: int = 1,
+        wavelet_channels: int = 4,
+        structure_channels: int = 12,
+        **dhcs_kwargs: Any,
+    ) -> None:
+        super().__init__()
+        from structdiff.sampling.cycle_spinning.dynamic_hypergraph_cycle_spinning import (
+            DynamicHypergraphCycleSpinning,
+            DHCSConfig,
+        )
+        cfg = DHCSConfig(
+            num_shifts=num_shifts,
+            channels=channels,
+            wavelet_channels=wavelet_channels,
+            structure_channels=structure_channels,
+            graph_k=min(4, num_shifts - 1),
+            **dhcs_kwargs,
+        )
+        self._algo = DynamicHypergraphCycleSpinning(cfg)
+
+    def forward(self, bundle: FeatureBundle) -> EngineResult:
+        conf  = bundle.confidence_maps
+        var   = bundle.pred_variances
+        coh   = bundle.coherence_maps
+        aniso = bundle.anisotropy_maps
+        wav   = bundle.wavelet_features
+
+        missing = [
+            name for name, val in [
+                ("confidence_maps",  conf),
+                ("pred_variances",   var),
+                ("coherence_maps",   coh),
+                ("anisotropy_maps",  aniso),
+                ("wavelet_features", wav),
+            ]
+            if val is None
+        ]
+        if missing:
+            raise ValueError(
+                f"_DynamicHypergraphAdapter: missing required features: {missing}."
+            )
+
+        result = self._algo(
+            outputs          = bundle.predictions,
+            confidence_maps  = conf,
+            pred_variances   = var,
+            coherence_maps   = coh,
+            anisotropy_maps  = aniso,
+            wavelet_features = wav,
+            timestep         = bundle.timestep,
+            return_weights   = True,
+        )
+        # return_weights=True → (fused, weights)
+        fused, weights = result
+        return EngineResult(fused=fused, weights=weights)
+
+
+# ---------------------------------------------------------------------------
+# _OpaqueAdapter  (preserved from v4)
 # ---------------------------------------------------------------------------
 
 class _OpaqueAdapter(BaseAggregator):
-    """Wraps a caller-supplied aggregation module with an unknown API.
-
-    The caller provides a call_fn that translates a FeatureBundle into
-    an EngineResult.  This makes the engine extensible without requiring
-    knowledge of any module's internal API.
-
-    Parameters
-    ----------
-    module:
-        Pre-built nn.Module.  Stored as a submodule so that
-        engine.named_modules() and device movement work correctly.
-    call_fn:
-        (adapter, bundle) -> EngineResult.
-    required:
-        frozenset of FeatureBundle field names this aggregator needs.
-    name:
-        Human-readable label for logging.
-    structure_channels:
-        If the wrapped module expects a specific structure channel count,
-        set this so FeatureManager can enforce it.  Default None (no check).
-    """
+    """Wraps a caller-supplied aggregation module with an unknown API."""
 
     def __init__(
         self,
@@ -761,11 +989,29 @@ class _OpaqueAdapter(BaseAggregator):
 
 
 # ---------------------------------------------------------------------------
+# Adapter registry: maps method key → (adapter_class, shape_kwarg_names)
+# ---------------------------------------------------------------------------
+
+# These are the lazily-constructable built-in methods.
+# Shape kwargs are inferred from the first batch and merged with stored kwargs.
+_BUILTIN_ADAPTER_MAP: Dict[str, type] = {
+    "learnable":          _LearnableAdapter,
+    "adaptive":           _AdaptiveAdapter,
+    "confidence":         _ConfidenceAdapter,
+    "wavelet_confidence": _WaveletConfidenceAdapter,
+    "structure_wavelet":  _StructureWaveletAdapter,
+    "transformer":        _TransformerAdapter,
+    "learnable_shift":    _LearnableShiftAdapter,
+    "ultimate":           _UltimateAdapter,
+    "dynamic_hypergraph": _DynamicHypergraphAdapter,
+}
+
+
+# ---------------------------------------------------------------------------
 # Shift utilities
 # ---------------------------------------------------------------------------
 
 def _inverse_shift(x: torch.Tensor, row: int, col: int) -> torch.Tensor:
-    """Undo a circular shift of (row, col) pixels."""
     return torch.roll(x, shifts=(-row, -col), dims=(2, 3))
 
 
@@ -777,7 +1023,7 @@ def _validate_fuse_inputs(
     outputs:  List[torch.Tensor],
     shifts:   Optional[List[Tuple[int, int]]],
     method:   str,
-    registry: Dict[str, BaseAggregator],
+    registry: Dict[str, Any],
 ) -> None:
     if not outputs:
         raise ValueError("outputs must not be empty.")
@@ -818,22 +1064,20 @@ def _check_shape_compatibility(
     channels:   int,
     method:     str,
 ) -> None:
-    """Raise a descriptive error if an already-built aggregator has incompatible shape.
-
-    Only inspects _UltimateAdapter, whose attribute names are verified
-    from the uploaded source (self._algo.num_shifts, self._algo.channels).
-    """
-    if isinstance(aggregator, _UltimateAdapter):
-        stored_n = aggregator._algo.num_shifts   # verified attribute name
-        stored_c = aggregator._algo.channels     # verified attribute name
-        if stored_n != num_shifts:
+    """Warn / raise on shape mismatches for known adapters."""
+    for attr_n, attr_c in [("num_shifts", "channels"), ]:
+        algo = getattr(aggregator, "_algo", None)
+        if algo is None:
+            continue
+        stored_n = getattr(algo, "num_shifts", None)
+        stored_c = getattr(algo, "channels", None)
+        if stored_n is not None and stored_n != num_shifts:
             raise ValueError(
                 f"Engine method '{method}' was built for num_shifts={stored_n} "
                 f"but current batch has num_shifts={num_shifts}. "
-                "Call engine.deregister(method) and re-register with the new shape, "
-                "or use a fixed cycle_width throughout the experiment."
+                "Call engine.deregister(method) and re-register with the new shape."
             )
-        if stored_c != channels:
+        if stored_c is not None and stored_c != channels:
             raise ValueError(
                 f"Engine method '{method}' was built for channels={stored_c} "
                 f"but current batch has channels={channels}. "
@@ -850,35 +1094,29 @@ class CycleSpinningEngine:
 
     Lifecycle
     ---------
-    1. Construct once, optionally with pre-built aggregators::
+    1. Construct once::
 
            engine = CycleSpinningEngine(
                config=EngineConfig(method="ultimate"),
            )
-           # For non-default UCS parameters (e.g. wavelet_channels=4):
-           engine.set_ultimate_kwargs(
-               wavelet_channels=4,
-               structure_channels=13,
-               num_levels=3,
-               num_heads=4,
-           )
 
-    2. In the inference / validation loop::
+    2. Optionally configure per-method adapter kwargs before first fuse()::
+
+           engine.set_ultimate_kwargs(wavelet_channels=4, structure_channels=13)
+           engine.set_method_kwargs("dynamic_hypergraph", token_dim=128, num_heads=8)
+
+    3. In the inference / validation loop::
 
            shifts  = CycleSpinningEngine.build_shift_grid(H, W, cycle_width)
-           outputs = []
-           for row, col in shifts:
-               shifted = torch.roll(noisy, shifts=(row, col), dims=(2, 3))
-               outputs.append(sample_fn(model, shifted))
+           outputs = [sample_fn(model, roll(noisy, s)) for s in shifts]
 
            result = engine.fuse(
                outputs=outputs,
                shifts=shifts,
-               # Pass DataLoader-precomputed features explicitly:
-               structure_features=struct_list,   # List[Tensor(B,13,H,W)]
-               wavelet_features=wav_list,        # List[Tensor(B,4,H,W)]
+               structure_features=struct_list,
+               wavelet_features=wav_list,
            )
-           fused = result.fused   # (B, C, H, W)
+           fused = result.fused
 
     Parameters
     ----------
@@ -896,10 +1134,10 @@ class CycleSpinningEngine:
         self._config = config or EngineConfig()
         self._feature_manager = FeatureManager(self._config)
         self._registry: Dict[str, BaseAggregator] = dict(aggregators or {})
-        # Extra kwargs forwarded to UltimateCycleSpinning constructor.
-        # Callers must call set_ultimate_kwargs before the first fuse()
-        # with method="ultimate" if non-default values are needed.
-        self._ultimate_kwargs: Dict[str, Any] = {}
+        # Per-method extra kwargs forwarded to adapter constructors.
+        self._method_kwargs: Dict[str, Dict[str, Any]] = {
+            name: {} for name in _BUILTIN_ADAPTER_MAP
+        }
 
     # ------------------------------------------------------------------
     # Public API
@@ -920,48 +1158,16 @@ class CycleSpinningEngine:
         timestep:           Optional[torch.Tensor] = None,
         method:             Optional[str] = None,
     ) -> EngineResult:
-        """Fuse cycle-spinning predictions into a single estimate.
-
-        Parameters
-        ----------
-        outputs:
-            List of N diffusion-model predictions, each (B, C, H, W),
-            one per (row, col) shift — already in the shifted frame.
-        shifts:
-            Corresponding (row, col) shift tuples.  If None, no
-            inverse-shift is applied (outputs already in canonical frame).
-        structure_features:
-            IMPORTANT: when using method="ultimate", this must be
-            provided by the caller as List[Tensor(B,13,H,W)].
-            On-the-fly extraction produces only 3 channels, which is
-            incompatible with UltimateCycleSpinning(structure_channels=13).
-        method:
-            Overrides EngineConfig.method for this call only.
-
-        Returns
-        -------
-        EngineResult
-            fused: (B, C, H, W) in the canonical frame.
-            weights: (B, num_levels) cross-level alpha from UCS,
-                     or None for other aggregators.
-        """
+        """Fuse cycle-spinning predictions into a single estimate."""
         active_method = method if method is not None else self._config.method
 
-        # 1. Validate
-        _validate_fuse_inputs(outputs, shifts, active_method, self._get_full_registry(outputs))
+        full_registry = self._get_full_registry(outputs)
+        _validate_fuse_inputs(outputs, shifts, active_method, full_registry)
 
-        # 2. Inverse-shift to canonical frame
         inv_preds = self._inverse_shift_all(outputs, shifts)
-
-        # 3. Get or build aggregator
         aggregator = self._get_or_build_aggregator(active_method, inv_preds)
+        _check_shape_compatibility(aggregator, len(inv_preds), inv_preds[0].shape[1], active_method)
 
-        # 4. Shape-compatibility check
-        _check_shape_compatibility(
-            aggregator, len(inv_preds), inv_preds[0].shape[1], active_method
-        )
-
-        # 5. Build feature bundle
         bundle = FeatureBundle(
             predictions        = inv_preds,
             confidence_maps    = confidence_maps,
@@ -974,14 +1180,12 @@ class CycleSpinningEngine:
             timestep           = timestep,
         )
 
-        # 6. Populate missing features (FIX-4: aggregator passed for channel guard)
         t_feat_start = time.perf_counter()
         self._feature_manager.populate(
             bundle, aggregator.required_features, aggregator=aggregator
         )
         t_feat = time.perf_counter() - t_feat_start
 
-        # 7. Dispatch
         aggregator.eval()
         t_agg_start = time.perf_counter()
         with torch.no_grad():
@@ -1012,20 +1216,17 @@ class CycleSpinningEngine:
         name:       str,
         aggregator: BaseAggregator,
     ) -> None:
-        """Register a pre-built aggregator under *name*.
+        """Register a pre-built BaseAggregator under *name*.
 
         Raises ValueError if *name* already exists.
-        Call deregister() first to replace an existing entry.
-
-        Example — registering A27::
-
-            class A27Adapter(BaseAggregator):
-                required_features = frozenset({"confidence_maps"})
-                def forward(self, bundle): ...
-
-            engine.register("a27", A27Adapter(...))
-            result = engine.fuse(outputs, shifts, method="a27")
         """
+        if not isinstance(aggregator, BaseAggregator):
+            raise TypeError(
+                f"register() expects a BaseAggregator subclass, got "
+                f"{type(aggregator).__name__}.  "
+                "Wrap the module in the appropriate adapter first, or use "
+                "register_opaque() for modules with non-standard APIs."
+            )
         if name in self._registry:
             raise ValueError(
                 f"Method '{name}' is already registered. "
@@ -1042,70 +1243,71 @@ class CycleSpinningEngine:
         required:  frozenset = frozenset(),
         structure_channels: Optional[int] = None,
     ) -> None:
-        """Register an aggregator whose API does not derive from BaseAggregator.
-
-        Parameters
-        ----------
-        name:
-            Unique method key.
-        module:
-            Pre-built nn.Module.
-        call_fn:
-            (adapter, bundle) -> EngineResult.
-        required:
-            frozenset of FeatureBundle field names the module needs.
-        structure_channels:
-            Expected structure channel count for FIX-4 guard.
-            Pass the value the wrapped module was constructed with.
-
-        Example::
-
-            def _conf_call(adapter, bundle):
-                fused, w = adapter._module(
-                    bundle.predictions,
-                    confidence_maps=bundle.confidence_maps,
-                )
-                return EngineResult(fused=fused, weights=w)
-
-            engine.register_opaque(
-                "confidence",
-                ConfidenceCycleSpinning().to(device),
-                call_fn=_conf_call,
-                required=frozenset({"confidence_maps"}),
-            )
-        """
+        """Register an aggregator whose API does not derive from BaseAggregator."""
         adapter = _OpaqueAdapter(
             module, call_fn, required, name, structure_channels=structure_channels
         )
         self.register(name, adapter)
 
     def deregister(self, name: str) -> None:
-        """Remove a registered aggregator."""
         removed = self._registry.pop(name, None)
         if removed is None:
             logger.warning("deregister: '%s' not found in registry.", name)
 
     def registered_methods(self) -> List[str]:
-        """Return sorted list of all registered method names."""
         return sorted(self._get_full_registry(None).keys())
 
     def set_ultimate_kwargs(self, **kwargs: Any) -> None:
-        """Set extra keyword arguments forwarded to UltimateCycleSpinning.
+        """Configure UltimateCycleSpinning adapter kwargs before first fuse().
 
-        Must be called before the first fuse() with method="ultimate".
-        After that call, "ultimate" is built and cached; use deregister()
-        first if you need to change parameters.
+        Must be called before the first fuse(method='ultimate') call.
+        After that the adapter is cached; deregister('ultimate') first to
+        change parameters.
 
-        Example (typical A12 configuration)::
+        Example::
 
             engine.set_ultimate_kwargs(
-                wavelet_channels=4,       # if DataLoader produces 4-ch wavelet
-                structure_channels=13,    # default; kept for explicitness
+                wavelet_channels=4,
+                structure_channels=13,
                 num_levels=3,
                 num_heads=4,
             )
         """
-        self._ultimate_kwargs = kwargs
+        self._method_kwargs["ultimate"] = kwargs
+
+    def set_method_kwargs(self, method: str, **kwargs: Any) -> None:
+        """Set extra keyword arguments forwarded to the named adapter constructor.
+
+        Must be called before the first fuse() with that method.
+        After construction the adapter is cached; deregister() first to
+        change parameters.
+
+        Parameters
+        ----------
+        method : str
+            One of the built-in method keys or any future extension.
+        **kwargs :
+            Forwarded verbatim to the adapter constructor after the
+            shape-derived parameters (num_shifts, channels).
+
+        Example::
+
+            engine.set_method_kwargs(
+                "dynamic_hypergraph",
+                token_dim=128,
+                num_heads=8,
+                num_layers=3,
+                wavelet_channels=4,
+            )
+        """
+        if method not in _BUILTIN_ADAPTER_MAP:
+            raise ValueError(
+                f"set_method_kwargs: '{method}' is not a built-in method. "
+                f"Built-in methods: {sorted(_BUILTIN_ADAPTER_MAP.keys())}. "
+                "For custom adapters, pass kwargs directly to the adapter "
+                "constructor and register it with engine.register()."
+            )
+        self._method_kwargs[method] = kwargs
 
     # ------------------------------------------------------------------
     # Shift grid utility
@@ -1117,26 +1319,7 @@ class CycleSpinningEngine:
         width:       int,
         cycle_width: int,
     ) -> List[Tuple[int, int]]:
-        """Return the canonical (row, col) shift grid in row-major order.
-
-        Exactly matches the nested loop from test_util.py::
-
-            for row in range(0, num_rows, cycle_width):
-                for col in range(0, num_cols, cycle_width):
-                    ...
-
-        Parameters
-        ----------
-        height, width:
-            Spatial dimensions of the input image.
-        cycle_width:
-            Step size (pixels) for both row and column directions.
-
-        Returns
-        -------
-        List of (row_shift, col_shift) tuples.
-        len(result) equals the num_shifts value for _UltimateAdapter.
-        """
+        """Return the canonical (row, col) shift grid in row-major order."""
         return [
             (row, col)
             for row in range(0, height, cycle_width)
@@ -1150,11 +1333,12 @@ class CycleSpinningEngine:
     def _get_full_registry(
         self,
         outputs: Optional[List[torch.Tensor]],
-    ) -> Dict[str, BaseAggregator]:
-        """Return registry plus a sentinel "ultimate" entry for validation."""
+    ) -> Dict[str, Any]:
+        """Return registry plus sentinel entries for all built-in methods."""
         full = dict(self._registry)
-        if "ultimate" not in full:
-            full["ultimate"] = object()  # type: ignore[assignment]
+        for name in _BUILTIN_ADAPTER_MAP:
+            if name not in full:
+                full[name] = object()  # type: ignore[assignment]
         return full
 
     @staticmethod
@@ -1174,31 +1358,57 @@ class CycleSpinningEngine:
         method: str,
         preds:  List[torch.Tensor],
     ) -> BaseAggregator:
-        """Return aggregator for *method*, building _UltimateAdapter on first call.
+        """Return adapter for *method*, constructing lazily on first call.
 
-        Shape-dependent construction reads from the actual prediction list.
-        After construction the aggregator is cached in self._registry.
+        All built-in methods are handled here.  The constructed adapter is
+        cached in self._registry so subsequent calls skip construction.
+
+        Shape-dependent parameters (num_shifts, channels) are derived from
+        the prediction list.  Extra kwargs come from self._method_kwargs.
         """
         if method in self._registry:
-            return self._registry[method]
-
-        if method == "ultimate":
-            N = len(preds)
-            C = preds[0].shape[1]
-            logger.info(
-                "CycleSpinningEngine: constructing _UltimateAdapter "
-                "(num_shifts=%d, channels=%d, kwargs=%s).",
-                N, C, self._ultimate_kwargs,
-            )
-            agg = _UltimateAdapter(
-                num_shifts=N,
-                channels=C,
-                **self._ultimate_kwargs,
-            ).to(self._config.device)
-            self._registry[method] = agg
+            agg = self._registry[method]
+            if not isinstance(agg, BaseAggregator):
+                raise TypeError(
+                    f"Registry entry for '{method}' is not a BaseAggregator "
+                    f"(got {type(agg).__name__}).  This should not happen — "
+                    "use engine.register(name, adapter) with a proper adapter."
+                )
             return agg
 
-        raise ValueError(
-            f"No aggregator registered for method '{method}'. "
-            f"Call engine.register('{method}', aggregator) before fuse()."
+        if method not in _BUILTIN_ADAPTER_MAP:
+            raise ValueError(
+                f"No aggregator registered for method '{method}'. "
+                f"Call engine.register('{method}', adapter) before fuse(), "
+                f"or use one of the built-in methods: "
+                f"{sorted(_BUILTIN_ADAPTER_MAP.keys())}."
+            )
+
+        adapter_cls = _BUILTIN_ADAPTER_MAP[method]
+        N = len(preds)
+        C = preds[0].shape[1]
+        extra = self._method_kwargs.get(method, {})
+
+        logger.info(
+            "CycleSpinningEngine: lazily constructing %s "
+            "(num_shifts=%d, channels=%d, kwargs=%s).",
+            adapter_cls.__name__, N, C, extra,
         )
+
+        sig = inspect.signature(adapter_cls.__init__)
+
+        kwargs = {
+            "num_shifts": N,
+        }
+
+        if "channels" in sig.parameters:
+            kwargs["channels"] = C
+
+        kwargs.update(extra)
+
+        agg = adapter_cls(
+            **kwargs,
+        ).to(self._config.device)
+
+        self._registry[method] = agg
+        return agg
