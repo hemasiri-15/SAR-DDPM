@@ -115,25 +115,26 @@ class TrainLoop:
                 for _ in range(len(self.ema_rate))
             ]
 
-        if torch.cuda.is_available():
-            print('cuda available')
+       # Use DDP only if distributed training has actually been initialized.
+        if (
+            torch.cuda.is_available()
+            and dist.is_available()
+            and dist.is_initialized()
+        ):
+            print("Using DistributedDataParallel")
             self.use_ddp = True
             self.ddp_model = DDP(
                 self.model,
-                device_ids=[dist_util.dev()],
-                output_device=dist_util.dev(),
+                device_ids=[0],
+                output_device=0,
                 broadcast_buffers=False,
                 bucket_cap_mb=128,
                 find_unused_parameters=True,
             )
         else:
-            if dist.is_initialized() and dist.get_world_size() > 1:
-                logger.warn(
-                    "Distributed training requires CUDA. "
-                    "Gradients will not be synchronized properly!"
-                )
+            print("Using single-GPU training")
             self.use_ddp = False
-            self.ddp_model = self.model
+            self.ddp_model = self.model 
 
         self.lambda_struct = 0.1
 
@@ -276,7 +277,16 @@ class TrainLoop:
         net_loss = 0.0
 
         # Get performance before training
-        avg_psnr, avg_ssim, _, mse, max_psnr = evaluate(self.val_loader, self.diffusion, self.ddp_model, dist_util.dev(), images_folder, use_ddim=self.use_ddim)
+        avg_psnr, avg_ssim, _, mse, max_psnr = evaluate(
+            self.val_loader,
+            self.diffusion,
+            self.ddp_model,
+            dist_util.dev(),
+            images_folder,
+            cycle_spinning=True,
+            cycle_width=128,
+            use_ddim=self.use_ddim,
+        )
         logger.log(f"\tStep = {self.step:>5},  PSNR: {avg_psnr:5.2f},  SSIM: {avg_ssim:5.3f},  MSE: {mse:2.1e},  Loss: 0.00e+00,  Net training time: {(time.perf_counter() - start_time - net_val_time):.1f}s,  Net validation time: {net_val_time:.1f}s")
         progress_bar = tqdm(total=self.log_interval, desc="[Training] Step:     0, Loss: 0.00e+00", unit="step")
 
@@ -320,7 +330,15 @@ class TrainLoop:
                 progress_bar.close()
 
                 val_time = time.perf_counter()
-                avg_psnr, avg_ssim, _, mse, max_psnr = evaluate(self.val_loader, self.diffusion, self.ddp_model, dist_util.dev(), images_folder)
+                avg_psnr, avg_ssim, _, mse, max_psnr = evaluate(
+                    self.val_loader,
+                    self.diffusion,
+                    self.ddp_model,
+                    dist_util.dev(),
+                    images_folder,
+                    cycle_spinning=True,
+                    cycle_width=128,
+                )
                 net_val_time += time.perf_counter() - val_time
 
                 logger.log(f"\tStep = {self.step:>5},  PSNR: {avg_psnr:5.2f},  SSIM: {avg_ssim:5.3f},  MSE: {mse:2.1e},  Loss: {(net_loss/(((self.step-1) % self.log_interval)+1)):2.2e},  Net training time: {(time.perf_counter() - start_time - net_val_time):.1f}s,  Net validation time: {net_val_time:.1f}s")
@@ -397,7 +415,7 @@ class TrainLoop:
                 self.eps_hook.last_x_t,
                 self.eps_hook.last_t,
                 self.eps_hook.last_eps_hat.float(),
-                self.diffusion.alphas_cumprod,
+                self.diffusion.original_alphas_cumprod,
             )
 
             struct_loss = self.struct_loss_fn(

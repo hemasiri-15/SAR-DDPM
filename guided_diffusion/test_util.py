@@ -10,7 +10,11 @@ import torch.nn.functional as F
 from torchvision import transforms
 from skimage.metrics import peak_signal_noise_ratio as psnr
 from skimage.metrics import structural_similarity as ssim
-from structdiff.sampling.cycle_spinning.learnable_cycle_spinning import LearnableCycleSpinning
+from structdiff.sampling.cycle_spinning.engine import (
+    CycleSpinningEngine,
+    EngineConfig,
+    FeatureBundle,
+)
 
 from torch.utils.data import DataLoader
 
@@ -61,7 +65,17 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
     net_time = 0.0 # sum evaluation times
     
     with torch.no_grad():
-        _, noisy_tensor, _ = next(iter(loader))
+        batch = next(iter(loader))
+
+        clean_tensor = batch[0]
+        noisy_tensor = batch[1]
+        look_num = batch[3]
+        struct_tensor_s1 = batch[4]
+        struct_tensor_s2 = batch[5]
+        struct_tensor_s3 = batch[6]
+        spectral_tensor = batch[7]
+        wavelet_tensor = batch[8]
+
         if test:
             # Perform a single pass to warm up the model on the GPU
             test_tensor = torch.empty_like(noisy_tensor).to(device)
@@ -70,7 +84,17 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
                 model,
                 test_tensor.shape,
                 clip_denoised=True,
-                model_kwargs={'noisy': test_tensor},
+                model_kwargs={
+                    "noisy": test_tensor,
+                    "look_num": look_num,
+                    "struct_tensors": (
+                        struct_tensor_s1,
+                        struct_tensor_s2,
+                        struct_tensor_s3,
+                    ),
+                    "spectral_tensor": spectral_tensor,
+                    "wavelet_tensor": wavelet_tensor,
+                },
                 progress=True,
             )
             
@@ -88,9 +112,29 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
 
 
         for batch_idx, data_tuple in enumerate(progress_bar):
-            clean_tensor, noisy_tensor, image_filename = data_tuple
+            (
+                clean_tensor,
+                noisy_tensor,
+                image_filename,
+                look_num,
+                struct_tensor_s1,
+                struct_tensor_s2,
+                struct_tensor_s3,
+                spectral_tensor,
+                wavelet_tensor,
+            ) = data_tuple
+
             clean_tensor = clean_tensor.to(device)
             noisy_tensor = noisy_tensor.to(device)
+
+            look_num = look_num.to(device)
+
+            struct_tensor_s1 = struct_tensor_s1.to(device)
+            struct_tensor_s2 = struct_tensor_s2.to(device)
+            struct_tensor_s3 = struct_tensor_s3.to(device)
+
+            spectral_tensor = spectral_tensor.to(device)
+            wavelet_tensor = wavelet_tensor.to(device)
             
             # Reformat the images for metrics
             clean_image = ((clean_tensor + 1.0)* 127.5).clamp(0, 255.0)
@@ -102,14 +146,11 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
             batch_start = time.perf_counter()
             
             if (cycle_spinning):
-                first = True
                 [_, _, num_rows, num_cols] = noisy_tensor.size()
                 val_inputv = torch.empty_like(noisy_tensor).to(device)
+                outputs = []
+                shifts = []
 
-                # Get number of cycle spins
-                N = int(np.ceil(num_rows / cycle_width) * np.ceil(num_cols / cycle_width))
-                lcs = LearnableCycleSpinning(num_shifts=N).to(device)
-                spin_outputs = []
 
                 # For each cycle (in both directions)
                 for row in range(0, num_rows, cycle_width):
@@ -120,29 +161,74 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
                         val_inputv[:,:, row:,:col ] = noisy_tensor[:,:,:num_rows-row , num_cols-col:]
                         val_inputv[:,:,:row , col:] = noisy_tensor[:,:, num_rows-row:,:num_cols-col ]
 
-                        model_kwargs = {'noisy': val_inputv}
+                        model_kwargs = {
+                            "noisy": val_inputv,
+                            "look_num": look_num,
+                            "struct_tensors": (
+                                struct_tensor_s1,
+                                struct_tensor_s2,
+                                struct_tensor_s3,
+                            ),
+                            "spectral_tensor": spectral_tensor,
+                            "wavelet_tensor": wavelet_tensor,
+                        }
 
                         # Get the predicted clean image
                         sample = sample_fn(
-                                model,
-                                val_inputv.shape,
-                                clip_denoised=True,
-                                model_kwargs=model_kwargs,
+                            model,
+                            val_inputv.shape,
+                            clip_denoised=True,
+                            model_kwargs=model_kwargs,
+                        )
+                        outputs.append(sample[-1])
+                        shifts.append((row, col))
+ 
+                        engine = CycleSpinningEngine(
+                            config=EngineConfig(
+                                method="ultimate",
+                                num_shifts=len(outputs),
+                                channels=outputs[0].shape[1],
+                                wavelet_channels=wavelet_tensor.shape[1],
+                                structure_channels=struct_tensor_s1.shape[1],
+                                coordinate_embed_dim=17,
                             )
+                        )
+                confidence_maps = [
+                    torch.ones_like(outputs[0][:, :1, :, :]) for _ in outputs
+                ]
 
-                        # Unspin the image and add to the averaged image
-                        if (first):
-                            pred_tensor = (1.0/N)*sample
-                            first = False
-                        else:
-                            pred_tensor[:,:,:, num_rows-row:, num_cols-col:] = pred_tensor[:,:,:, num_rows-row:, num_cols-col:] + (1.0/N)*sample[:,:,:row ,:col ]
-                            pred_tensor[:,:,:,:num_rows-row ,:num_cols-col ] = pred_tensor[:,:,:,:num_rows-row ,:num_cols-col ] + (1.0/N)*sample[:,:, row:, col:]
-                            pred_tensor[:,:,:,:num_rows-row , num_cols-col:] = pred_tensor[:,:,:,:num_rows-row , num_cols-col:] + (1.0/N)*sample[:,:, row:,:col ]
-                            pred_tensor[:,:,:, num_rows-row:,:num_cols-col ] = pred_tensor[:,:,:, num_rows-row:,:num_cols-col ] + (1.0/N)*sample[:,:,:row , col:]
+                features = FeatureBundle(
+                    confidence_maps=confidence_maps,
+                    structure_features=[struct_tensor_s1] * len(outputs),
+                    wavelet_features=[wavelet_tensor] * len(outputs),
+                    spectral_features=[spectral_tensor] * len(outputs),
+                )
+
+                print("output      :", outputs[0].shape, flush=True)
+                print("confidence  :", confidence_maps[0].shape, flush=True)
+                print("wavelet     :", wavelet_tensor.shape, flush=True)
+                print("structure   :", struct_tensor_s1.shape, flush=True)
+
+                result = engine.fuse(
+                    outputs=outputs,
+                    features=features,
+                )
+
+                pred_tensor = result.fused
 
             else:
                 # Otherwise, get the predicted clean image as normal
-                model_kwargs = {'noisy': noisy_tensor}
+                model_kwargs = {
+                    "noisy": noisy_tensor,
+                    "look_num": look_num,
+                    "struct_tensors": (
+                        struct_tensor_s1,
+                        struct_tensor_s2,
+                        struct_tensor_s3,
+                    ),
+                    "spectral_tensor": spectral_tensor,
+                    "wavelet_tensor": wavelet_tensor,
+                }
 
                 pred_tensor = sample_fn(
                                 model,

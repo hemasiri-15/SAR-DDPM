@@ -482,8 +482,7 @@ class UNetModel(nn.Module):
         )
 
         self.look_emb = LookEmbedding(
-            num_embeddings=5,
-            embedding_dim=time_embed_dim,
+            time_embed_dim=time_embed_dim,
         )
 
         self.struct_encoder = StructTensorEncoder(

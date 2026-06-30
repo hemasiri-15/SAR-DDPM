@@ -75,6 +75,8 @@ class SpacedDiffusion(GaussianDiffusion):
         self.original_num_steps = len(kwargs["betas"])
 
         base_diffusion = GaussianDiffusion(**kwargs)  # pylint: disable=missing-kwoa
+        self.original_alphas_cumprod = base_diffusion.alphas_cumprod.copy()
+
         last_alpha_cumprod = 1.0
         new_betas = []
         for i, alpha_cumprod in enumerate(base_diffusion.alphas_cumprod):

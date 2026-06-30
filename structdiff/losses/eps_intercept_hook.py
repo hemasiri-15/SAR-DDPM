@@ -178,7 +178,14 @@ def reconstruct_x0(
     torch.Tensor
         x_0_hat [B, C, H, W].  Gradient: x_0_hat → eps_hat → UNet.
     """
-    alphas_cumprod = alphas_cumprod.to(x_t.device)
+    alphas_cumprod = torch.as_tensor(
+        alphas_cumprod,
+        device=x_t.device,
+        dtype=x_t.dtype,
+    )
+
+    # Timesteps must be integer indices.
+    t = t.to(torch.long)
 
     sqrt_ab   = alphas_cumprod[t].sqrt()          # [B]
     sqrt_1mab = (1.0 - alphas_cumprod[t]).sqrt()  # [B]
