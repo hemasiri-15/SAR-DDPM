@@ -7,6 +7,7 @@ import torch as th
 import torch.nn as nn
 import torch.nn.functional as F
 from structdiff.conditioning.look_embedding import LookEmbedding
+from structdiff.transformer import TransformerBlock
 
 from .fp16_util import convert_module_to_f16, convert_module_to_f32
 from .nn import (
@@ -482,8 +483,7 @@ class UNetModel(nn.Module):
         )
 
         self.look_emb = LookEmbedding(
-            num_embeddings=5,
-            embedding_dim=time_embed_dim,
+            time_embed_dim=time_embed_dim,
         )
 
         self.struct_encoder = StructTensorEncoder(
@@ -578,6 +578,12 @@ class UNetModel(nn.Module):
                 num_heads=num_heads,
                 num_head_channels=num_head_channels,
                 use_new_attention_order=use_new_attention_order,
+            ),
+            TransformerBlock(
+                channels=ch,
+                num_heads=max(1, num_heads),
+                mlp_ratio=4.0,
+                dropout=dropout,
             ),
             ResBlock(
                 ch,
@@ -727,6 +733,9 @@ class SuperResModel(UNetModel):
         noisy = kwargs['noisy']
         look_num = kwargs.get("look_num", None)
         struct_tensor = kwargs.get("struct_tensor", None)
+        struct_tensors = kwargs.get("struct_tensors", None)
+        spectral_tensor = kwargs.get("spectral_tensor", None)
+        wavelet_tensor = kwargs.get("wavelet_tensor", None)
 
         x = th.cat((x, noisy), dim=1)
 
@@ -734,7 +743,10 @@ class SuperResModel(UNetModel):
             x,
             timesteps,
             look_num=look_num,
-        struct_tensor=struct_tensor,
+            struct_tensor=struct_tensor,
+            struct_tensors=struct_tensors,
+            spectral_tensor=spectral_tensor,
+            wavelet_tensor=wavelet_tensor,
         )
 
         return output
