@@ -346,7 +346,7 @@ class TransformerBlock(_BaseTransformerBlock):
     torch.Size([2, 192, 32, 32])
     >>> y, attn_weights = block(x, return_attention=True)
     >>> attn_weights.shape
-    torch.Size([2, 32, 32])
+    torch.Size([2, 1024, 1024])
     """
 
     def _build_attention(
@@ -375,7 +375,7 @@ class TransformerBlock(_BaseTransformerBlock):
             normed,
             normed,
             need_weights=return_attention,
-            average_attn_weights=False,
+            average_attn_weights=True,
         )
 
     def forward(
