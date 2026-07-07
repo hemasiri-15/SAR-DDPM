@@ -27,3 +27,7 @@ results/
 Thumbs.dbweights/
 logs/
 
+DSIFN/
+weights/
+logs/
+*.backup

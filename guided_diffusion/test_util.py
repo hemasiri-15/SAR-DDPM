@@ -121,6 +121,17 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
                 ).to(device)
 
                 spin_outputs = []
+                from structdiff.sampling.cycle_spinning.engine import (
+                    CycleSpinningEngine,
+                    EngineConfig,
+                )
+
+                engine = CycleSpinningEngine(
+                    EngineConfig(method="dynamic_hypergraph")
+                )
+
+                samples = []
+                shifts = []
 
                 # For each cycle (in both directions)
                 for row in range(0, num_rows, cycle_width):
@@ -140,6 +151,9 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
                                 clip_denoised=True,
                                 model_kwargs=model_kwargs,
                             )
+
+                        samples.append(sample)
+                        shifts.append((row, col))
 
                         # Unspin the image and add to the averaged image
                         if (first):

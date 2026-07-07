@@ -33,6 +33,23 @@ CORR-7  feature_diversity_threshold default 0.8 -> 0.6.
 
 CORR-8  radius_descriptor extended to 5-D (adds structure coherence).
 
+CORR-9  Repository-compatibility fix (engine.py / test_util.py integration).
+         token_dim and level_token_dim are derived from RUNTIME channel
+         counts (channels, wavelet_channels, structure_channels), which
+         are themselves inferred from the caller's dataset tensors and
+         therefore cannot be guaranteed to be divisible by any fixed
+         num_heads / cross_level_heads. The previous behaviour was to
+         hard-`raise ValueError` whenever the caller's requested head
+         count didn't evenly divide the resulting dimension (this is
+         what produced "token_dim=27 must be divisible by num_heads=4"
+         and "level_token_dim=19 not divisible by cross_level_heads=2").
+         Both ShiftLevel and UltimateCycleSpinning now call
+         `_largest_divisor_head_count()` to silently fall back to the
+         largest head count (from a descending candidate list seeded by
+         the caller's requested value) that evenly divides the actual
+         runtime dimension, instead of raising. Every dimension > 0 has
+         at least one valid head count (1), so this can never fail.
+
 Frozen Decisions (post-correction)
 -----------------------------------
 Frequency pyramid     : per-shift Haar (CORR-1)
@@ -48,6 +65,7 @@ MoE router entropy    : Independent router_entropy_lambda (CORR-5)
 feature_div threshold : 0.6 (CORR-7)
 radius_descriptor dim : 5 with structure coherence (CORR-8)
 Cross-level diversity : coord + radius + entropy (CORR-6)
+Head-count selection   : auto-fit to runtime token_dim (CORR-9)
 """
 
 from __future__ import annotations
@@ -83,6 +101,7 @@ _GUMBEL_TEMP_INIT: float = 1.0
 _GUMBEL_TEMP_MIN: float = 0.1
 _GUMBEL_DECAY_DEFAULT: float = 0.99995   # CORR-3
 _RADIUS_DESCRIPTOR_DIM: int = 5          # CORR-8 (was 4)
+_HEAD_COUNT_CANDIDATES: Tuple[int, ...] = (8, 4, 2, 1)   # CORR-9 fallback ladder
 
 _LEVEL_PLOT_COLORS: Tuple[str, ...] = (
     "#1f77b4", "#d62728", "#2ca02c", "#ff7f0e", "#9467bd", "#8c564b",
@@ -110,6 +129,46 @@ _HAAR_HH: torch.Tensor = torch.tensor([[0.5, -0.5], [-0.5, 0.5]], dtype=torch.fl
 
 def _pool_factor(pooling: str) -> int:
     return _MULTI_POOL_FACTOR if pooling == "multi" else 1
+
+
+def _largest_divisor_head_count(
+    dim: int,
+    candidates: Sequence[int] = _HEAD_COUNT_CANDIDATES,
+) -> int:
+    """CORR-9: pick a head count that evenly divides ``dim``.
+
+    Repository-compatibility fix. ``dim`` (a token_dim or level_token_dim)
+    is computed from runtime channel counts supplied by the caller's
+    dataset (SAR-DDPM's ``wavelet_tensor`` / ``struct_tensor_s1`` etc.),
+    so it is not guaranteed to be divisible by any fixed head count.
+
+    Tries ``candidates`` in order (the caller's originally-requested head
+    count should be placed first by the caller so it is preferred when it
+    happens to divide evenly), and falls back to progressively smaller
+    powers of two. ``1`` always divides any positive integer, so this
+    function never raises.
+
+    Parameters
+    ----------
+    dim:
+        The runtime dimension (token_dim or level_token_dim) that needs
+        an attention head count.
+    candidates:
+        Ordered head-count options to try, most-preferred first.
+
+    Returns
+    -------
+    int
+        The first candidate that evenly divides ``dim``; ``1`` if none do
+        (which cannot happen given the default candidate list, since 1 is
+        always included).
+    """
+    if dim <= 0:
+        raise ValueError(f"dim must be > 0, got {dim}.")
+    for h in candidates:
+        if h >= 1 and dim % h == 0:
+            return h
+    return 1
 
 
 @torch.no_grad()
@@ -477,7 +536,11 @@ class FlashMHA(nn.Module):
         coord_bias_hidden: int = 32,
     ) -> None:
         super().__init__()
-        assert d_model % num_heads == 0
+        # CORR-9: defensively re-derive a compatible head count instead of
+        # asserting — callers may pass a num_heads that no longer evenly
+        # divides d_model once d_model is computed from runtime channels.
+        if d_model % num_heads != 0:
+            num_heads = _largest_divisor_head_count(d_model, candidates=(num_heads, *_HEAD_COUNT_CANDIDATES))
         self.d_model = d_model
         self.num_heads = num_heads
         self.head_dim = d_model // num_heads
@@ -697,10 +760,13 @@ class ShiftLevel(nn.Module):
             + pf * wavelet_channels + pf * structure_channels
             + coordinate_embed_dim
         )
-        if token_dim % num_heads != 0:
-            raise ValueError(
-                f"token_dim={token_dim} must be divisible by num_heads={num_heads}."
-            )
+        # CORR-9: token_dim is derived from runtime channel counts (from the
+        # caller's dataset tensors) and is not guaranteed to be divisible by
+        # the caller's requested num_heads. Auto-select a compatible head
+        # count (preferring the caller's request when it works) instead of
+        # raising — this is what previously surfaced as
+        # "token_dim=27 must be divisible by num_heads=4".
+        num_heads = _largest_divisor_head_count(token_dim, candidates=(num_heads, *_HEAD_COUNT_CANDIDATES))
         self.num_shifts = num_shifts
         self.channels = channels
         self.wavelet_channels = wavelet_channels
@@ -866,7 +932,7 @@ class ShiftLevel(nn.Module):
 # ---------------------------------------------------------------------------
 
 class UltimateCycleSpinning(nn.Module):
-    """Hierarchical cycle-spinning aggregator with post-freeze corrections CORR-1..8.
+    """Hierarchical cycle-spinning aggregator with post-freeze corrections CORR-1..9.
 
     New parameters vs A26i-q
     ------------------------
@@ -876,6 +942,19 @@ class UltimateCycleSpinning(nn.Module):
     Changed defaults
     ----------------
     feature_diversity_threshold : 0.6  (was 0.8, CORR-7)
+
+    Repository compatibility (CORR-9)
+    ----------------------------------
+    ``num_heads`` and ``cross_level_heads`` are no longer hard
+    requirements. ``channels``, ``wavelet_channels``, and
+    ``structure_channels`` are typically inferred at the call site from
+    runtime dataset tensors (see ``structdiff/sampling/cycle_spinning/
+    engine.py``'s ``EngineConfig`` / ``test_util.py``'s ``evaluate()``),
+    so ``token_dim`` and ``level_token_dim`` are runtime-dependent and
+    not guaranteed to be divisible by any particular head count. The
+    constructor now auto-selects the largest workable head count
+    (preferring the caller's requested value when it divides evenly)
+    instead of raising ``ValueError``.
     """
 
     def __init__(
@@ -944,16 +1023,21 @@ class UltimateCycleSpinning(nn.Module):
             + pf * eff_wavelet_ch + pf * structure_channels
             + coordinate_embed_dim
         )
-        if token_dim % num_heads != 0:
-            raise ValueError(f"token_dim={token_dim} must be divisible by num_heads={num_heads}.")
+        # CORR-9: auto-select a head count that evenly divides the
+        # runtime-derived token_dim instead of raising. Preference order
+        # is the caller's requested num_heads first, then the standard
+        # power-of-two ladder.
+        num_heads = _largest_divisor_head_count(token_dim, candidates=(num_heads, *_HEAD_COUNT_CANDIDATES))
 
         level_token_dim: int = (
             pf * channels + pf * _CONFIDENCE_CHANNELS
             + pf * eff_wavelet_ch + pf * structure_channels
             + _LEVEL_STAT_DIM
         )
-        if level_token_dim % cross_level_heads != 0:
-            raise ValueError(f"level_token_dim={level_token_dim} not divisible by cross_level_heads={cross_level_heads}.")
+        # CORR-9: same auto-selection for the cross-level token dimension.
+        cross_level_heads = _largest_divisor_head_count(
+            level_token_dim, candidates=(cross_level_heads, *_HEAD_COUNT_CANDIDATES)
+        )
 
         # Store hparams
         self.num_levels = num_levels

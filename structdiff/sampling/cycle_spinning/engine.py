@@ -1165,7 +1165,7 @@ class CycleSpinningEngine:
         _validate_fuse_inputs(outputs, shifts, active_method, full_registry)
 
         inv_preds = self._inverse_shift_all(outputs, shifts)
-        aggregator = self._get_or_build_aggregator(active_method, inv_preds)
+        aggregator = self._get_or_build_aggregator(active_method, inv_preds, bundle)
         _check_shape_compatibility(aggregator, len(inv_preds), inv_preds[0].shape[1], active_method)
 
         bundle = FeatureBundle(
@@ -1357,6 +1357,7 @@ class CycleSpinningEngine:
         self,
         method: str,
         preds:  List[torch.Tensor],
+        bundle: FeatureBundle,
     ) -> BaseAggregator:
         """Return adapter for *method*, constructing lazily on first call.
 
@@ -1404,7 +1405,23 @@ class CycleSpinningEngine:
         if "channels" in sig.parameters:
             kwargs["channels"] = C
 
+        if (
+            "wavelet_channels" in sig.parameters
+            and bundle.wavelet_features is not None
+            and len(bundle.wavelet_features) > 0
+        ):
+            kwargs["wavelet_channels"] = bundle.wavelet_features[0].shape[1]
+
+        if (
+            "structure_channels" in sig.parameters
+            and bundle.structure_features is not None
+            and len(bundle.structure_features) > 0
+        ):
+            kwargs["structure_channels"] = bundle.structure_features[0].shape[1]
+
         kwargs.update(extra)
+
+        print("Aggregator kwargs:", kwargs)
 
         agg = adapter_cls(
             **kwargs,
