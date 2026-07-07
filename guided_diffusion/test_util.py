@@ -13,7 +13,14 @@ from skimage.metrics import structural_similarity as ssim
 from structdiff.sampling.cycle_spinning.engine import (
     CycleSpinningEngine,
     EngineConfig,
+<<<<<<< HEAD
     FeatureBundle,
+=======
+    EngineResult,
+)
+from structdiff.sampling.cycle_spinning.learnable_cycle_spinning import (
+    LearnableCycleSpinning,
+>>>>>>> cycle-engine
 )
 
 from torch.utils.data import DataLoader
@@ -127,6 +134,7 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
             clean_tensor = clean_tensor.to(device)
             noisy_tensor = noisy_tensor.to(device)
 
+<<<<<<< HEAD
             look_num = look_num.to(device)
 
             struct_tensor_s1 = struct_tensor_s1.to(device)
@@ -136,21 +144,45 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
             spectral_tensor = spectral_tensor.to(device)
             wavelet_tensor = wavelet_tensor.to(device)
             
+=======
+>>>>>>> cycle-engine
             # Reformat the images for metrics
             clean_image = ((clean_tensor + 1.0)* 127.5).clamp(0, 255.0)
             clean_image = torch.round(torch.mean(clean_image, dim=1)) / 255.0
             clean_image = clean_image.contiguous()
 
             batch_size = clean_tensor.shape[0]
-            
+
             batch_start = time.perf_counter()
-            
+
             if (cycle_spinning):
                 [_, _, num_rows, num_cols] = noisy_tensor.size()
                 val_inputv = torch.empty_like(noisy_tensor).to(device)
                 outputs = []
                 shifts = []
 
+<<<<<<< HEAD
+=======
+                # Get number of cycle spins
+                N = int(np.ceil(num_rows / cycle_width) * np.ceil(num_cols / cycle_width))
+                aggregator = build_cycle_spinning(
+                    method="learnable",
+                    num_shifts=N,
+                ).to(device)
+
+                spin_outputs = []
+                from structdiff.sampling.cycle_spinning.engine import (
+                    CycleSpinningEngine,
+                    EngineConfig,
+                )
+
+                engine = CycleSpinningEngine(
+                    EngineConfig(method="dynamic_hypergraph")
+                )
+
+                samples = []
+                shifts = []
+>>>>>>> cycle-engine
 
                 # For each cycle (in both directions)
                 for row in range(0, num_rows, cycle_width):
@@ -197,6 +229,7 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
                     torch.ones_like(outputs[0][:, :1, :, :]) for _ in outputs
                 ]
 
+<<<<<<< HEAD
                 features = FeatureBundle(
                     confidence_maps=confidence_maps,
                     structure_features=[struct_tensor_s1] * len(outputs),
@@ -215,6 +248,20 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
                 )
 
                 pred_tensor = result.fused
+=======
+                        samples.append(sample)
+                        shifts.append((row, col))
+
+                        # Unspin the image and add to the averaged image
+                        if (first):
+                            pred_tensor = (1.0/N)*sample
+                            first = False
+                        else:
+                            pred_tensor[:,:,:, num_rows-row:, num_cols-col:] = pred_tensor[:,:,:, num_rows-row:, num_cols-col:] + (1.0/N)*sample[:,:,:row ,:col ]
+                            pred_tensor[:,:,:,:num_rows-row ,:num_cols-col ] = pred_tensor[:,:,:,:num_rows-row ,:num_cols-col ] + (1.0/N)*sample[:,:, row:, col:]
+                            pred_tensor[:,:,:,:num_rows-row , num_cols-col:] = pred_tensor[:,:,:,:num_rows-row , num_cols-col:] + (1.0/N)*sample[:,:, row:,:col ]
+                            pred_tensor[:,:,:, num_rows-row:,:num_cols-col ] = pred_tensor[:,:,:, num_rows-row:,:num_cols-col ] + (1.0/N)*sample[:,:,:row , col:]
+>>>>>>> cycle-engine
 
             else:
                 # Otherwise, get the predicted clean image as normal

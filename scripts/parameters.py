@@ -7,6 +7,7 @@ def default_args(test=False):
             test_length = 200,
             test_checkpoint = None,
             cycle_spinning = False,
+            cycle_spinning_method = "learnable",
             cycle_width = 100,
             batch_size = 1,
             seed = 123,

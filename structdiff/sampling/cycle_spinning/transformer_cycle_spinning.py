@@ -421,7 +421,7 @@ class TransformerCycleSpinning(nn.Module):
         channels: int,
         wavelet_channels: int,
         structure_channels: int,
-        num_heads: int = 4,
+        num_heads: int = 1,
         num_layers: int = 2,
         dropout: float = 0.1,
         temperature: float = 1.0,

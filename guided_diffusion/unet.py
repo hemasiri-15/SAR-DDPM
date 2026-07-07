@@ -25,6 +25,10 @@ from structdiff.conditioning.multiscale_structure_tensor_encoder import (
 )
 from structdiff.conditioning.spectral_tensor_encoder import TensorSpectralEncoder
 from structdiff.conditioning.wavelet_encoder import WaveletEncoder
+from structdiff.transformer.transformer_block import PhysicsTransformerBlock
+from structdiff.transformer.physics_attention_bias_builder import (
+    PhysicsAttentionBiasBuilder,
+)
 
 class AttentionPool2d(nn.Module):
     """
@@ -73,13 +77,16 @@ class TimestepBlock(nn.Module):
 class TimestepEmbedSequential(nn.Sequential, TimestepBlock):
     """
     A sequential module that passes timestep embeddings to the children that
-    support it as an extra input.
+    support it as an extra input, and passes an optional physics attention
+    bias to the children that support that as well.
     """
 
-    def forward(self, x, emb):
+    def forward(self, x, emb, physics_attention_bias=None):
         for layer in self:
             if isinstance(layer, TimestepBlock):
                 x = layer(x, emb)
+            elif isinstance(layer, PhysicsTransformerBlock):
+                x = layer(x, physics_attention_bias=physics_attention_bias)
             else:
                 x = layer(x)
         return x
@@ -499,6 +506,8 @@ class UNetModel(nn.Module):
             time_embed_dim=time_embed_dim
         )
 
+        self.physics_attention_bias_builder = PhysicsAttentionBiasBuilder()
+
         if self.num_classes is not None:
             self.label_emb = nn.Embedding(num_classes, time_embed_dim)
 
@@ -577,6 +586,12 @@ class UNetModel(nn.Module):
                 num_heads=num_heads,
                 num_head_channels=num_head_channels,
                 use_new_attention_order=use_new_attention_order,
+            ),
+            PhysicsTransformerBlock(
+                channels=ch,
+                num_heads=max(1, num_heads),
+                mlp_ratio=4.0,
+                dropout=dropout,
             ),
             ResBlock(
                 ch,
@@ -702,7 +717,23 @@ class UNetModel(nn.Module):
             h = module(h, emb)
             hs.append(h)
 
-        h = self.middle_block(h, emb)
+        physics_attention_bias = None
+        if struct_tensor is not None:
+            bottleneck_height, bottleneck_width = h.shape[-2], h.shape[-1]
+            struct_tensor_at_bottleneck = F.interpolate(
+                struct_tensor,
+                size=(bottleneck_height, bottleneck_width),
+                mode="bilinear",
+                align_corners=False,
+            )
+
+            physics_attention_bias = self.physics_attention_bias_builder(
+                struct_tensor_at_bottleneck
+            )
+
+        h = self.middle_block(
+            h, emb, physics_attention_bias=physics_attention_bias
+        )
 
         for module in self.output_blocks:
             h = th.cat([h, hs.pop()], dim=1)
@@ -951,5 +982,3 @@ class EncoderUNetModel(nn.Module):
         else:
             h = h.type(x.dtype)
             return self.out(h)
-
-

@@ -9,8 +9,8 @@ from datetime import datetime
 import torch
 from torch.utils.data import DataLoader
 
-from datasets import SynthSARDataset
-from parameters import default_args
+from .datasets import SynthSARDataset
+from .parameters import default_args
 from guided_diffusion.test_util import (
     evaluate,
     evaluate_sar,
