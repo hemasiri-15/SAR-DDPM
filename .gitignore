@@ -2,6 +2,7 @@
 __pycache__/
 *.py[cod]
 *.pyo
+*.egg-info/
 
 # Virtual environments
 venv/
@@ -10,8 +11,17 @@ venv/
 # Jupyter
 .ipynb_checkpoints/
 
+# IDE
+.vscode/
+.idea/
+
 # Logs
 *.log
+logs/
+runs/
+
+# TensorBoard
+events.out.*
 
 # Model checkpoints
 *.pt
@@ -24,10 +34,19 @@ results/
 
 # OS files
 .DS_Store
-Thumbs.dbweights/
-logs/
-
-DSIFN/
+Thumbs.db
 weights/
 logs/
+
+# Backup files
+*.bak
 *.backup
+*.orig
+*.old
+*.rej
+
+#Dataset
+DSIFN/
+
+
+DSIFN/
