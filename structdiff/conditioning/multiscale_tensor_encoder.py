@@ -69,11 +69,7 @@ _COND_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
 if _COND_DIR not in sys.path:
     sys.path.insert(0, _COND_DIR)
 
-<<<<<<< HEAD
-from structdiff.conditioning.structure_tensor_encoder import StructTensorEncoder  # noqa: E402
-=======
 from .structure_tensor_encoder import StructTensorEncoder  # noqa: E402
->>>>>>> cycle-engine
 
 # ---------------------------------------------------------------------------
 # Constants
