@@ -679,7 +679,7 @@ class _TransformerAdapter(BaseAggregator):
                 "wavelet_features, and structure_features to be populated."
             )
         fused = self._algo(
-            bundle.predictions, conf, wav, struc, timestep=bundle.timestep
+            bundle.predictions, conf, wav, struc
         )
         return EngineResult(fused=fused)
 
@@ -755,7 +755,7 @@ class _LearnableShiftAdapter(BaseAggregator):
                 "wavelet_features, and structure_features to be populated."
             )
         fused = self._algo(
-            bundle.predictions, conf, wav, struc, timestep=bundle.timestep
+            bundle.predictions, conf, wav, struc
         )
         return EngineResult(fused=fused)
 
@@ -1165,8 +1165,6 @@ class CycleSpinningEngine:
         _validate_fuse_inputs(outputs, shifts, active_method, full_registry)
 
         inv_preds = self._inverse_shift_all(outputs, shifts)
-        aggregator = self._get_or_build_aggregator(active_method, inv_preds, bundle)
-        _check_shape_compatibility(aggregator, len(inv_preds), inv_preds[0].shape[1], active_method)
 
         bundle = FeatureBundle(
             predictions        = inv_preds,
@@ -1180,16 +1178,38 @@ class CycleSpinningEngine:
             timestep           = timestep,
         )
 
+        aggregator = self._get_or_build_aggregator(active_method, inv_preds, bundle)
+        _check_shape_compatibility(aggregator, len(inv_preds), inv_preds[0].shape[1], active_method)
+
         t_feat_start = time.perf_counter()
         self._feature_manager.populate(
             bundle, aggregator.required_features, aggregator=aggregator
         )
         t_feat = time.perf_counter() - t_feat_start
+        # ------------------------------------------------------------
+        # Execute the aggregator in the correct mode.
+        #
+        # Training:
+        #   - preserve autograd graph
+        #   - enable DropPath / Gumbel routing / MoE
+        #
+        # Inference:
+        #   - disable gradients
+        #   - use eval() for deterministic behaviour
+        # ------------------------------------------------------------
 
-        aggregator.eval()
+        training = torch.is_grad_enabled()
+
+        aggregator.train(training)
+
         t_agg_start = time.perf_counter()
-        with torch.no_grad():
+
+        if training:
             result = aggregator(bundle)
+        else:
+            with torch.no_grad():
+                result = aggregator(bundle)
+
         t_agg = time.perf_counter() - t_agg_start
 
         result.diagnostics = result.diagnostics or {}

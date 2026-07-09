@@ -18,9 +18,19 @@ from structdiff.losses.structure_consistency_loss import (
     MultiScaleStructureConsistencyLoss,
 )
 
-from structdiff.losses.edge_aware_loss import (       # A5
+from structdiff.losses.edge_aware_loss import (
     EdgeAwareLoss,
     DEFAULT_LAMBDA_EDGE,
+)
+
+from structdiff.losses.wavelet_consistency_loss import (
+    WaveletConsistencyLoss,
+    DEFAULT_LAMBDA_WAVELET,
+)
+
+from structdiff.losses.ssim_loss import (
+    SSIMLoss,
+    DEFAULT_LAMBDA_SSIM,
 )
 
 from structdiff.losses.eps_intercept_hook import (
@@ -152,9 +162,23 @@ class TrainLoop:
             beta=0.4,    # weight on directional (Gx / Gy) L1 term
         ).to(dist_util.dev())
 
+        # A34 — Wavelet Consistency Loss
+        self.lambda_wavelet = DEFAULT_LAMBDA_WAVELET
+
+        self.wavelet_loss_fn = WaveletConsistencyLoss().to(
+            dist_util.dev()
+        )
+
         self.eps_hook = EpsInterceptHook(
             self.ddp_model,
             learn_sigma=self.learn_sigma,
+        )
+
+        # A36 — SSIM Loss
+        self.lambda_ssim = DEFAULT_LAMBDA_SSIM
+
+        self.ssim_loss_fn = SSIMLoss().to(
+            dist_util.dev()
         )
 
     def _load_and_sync_parameters(self):
@@ -442,6 +466,34 @@ class TrainLoop:
                 loss = loss + self.lambda_edge * edge_loss
                 logger.logkv_mean("edge_loss", edge_loss.item())
             # ── end A5 ────────────────────────────────────────────────
+
+            # ── A34: Wavelet Consistency Loss ─────────────────────────
+            if self.lambda_wavelet > 0.0:
+                wavelet_loss = self.wavelet_loss_fn(
+                    x_pred=x0_hat,
+                    x_gt=micro.float().detach(),
+            )
+
+            loss = loss + self.lambda_wavelet * wavelet_loss
+
+            logger.logkv_mean(
+                "wavelet_loss",
+                wavelet_loss.item(),
+            )
+            # ── A36: SSIM Loss ────────────────────────────────────────
+            if self.lambda_ssim > 0.0:
+                ssim_loss = self.ssim_loss_fn(
+                    x_pred=x0_hat,
+                    x_gt=micro.float().detach(),
+                )
+
+                loss = loss + self.lambda_ssim * ssim_loss
+
+                logger.logkv_mean(
+                    "ssim_loss",
+                    ssim_loss.item(),
+                )
+            # ──────────────────────────────────────────────────────────
 
             net_loss += loss
 

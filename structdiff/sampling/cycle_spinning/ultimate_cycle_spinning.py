@@ -849,7 +849,9 @@ class ShiftLevel(nn.Module):
             s = _apply_pool(self.pool, st_i)
             g = self.coordinate_embedding(coords_c[i]).unsqueeze(0).expand(B, -1)
             r = r_embed.unsqueeze(0).expand(B, -1)
+
             raw = torch.cat([z, c, v, s, g, r], dim=1).to(blk_dtype)
+
             tok = self.input_proj(raw)
             tok = tok * torch.sigmoid(self.conf_gate(c))
             tok = tok + lt.unsqueeze(0)
@@ -1016,7 +1018,11 @@ class UltimateCycleSpinning(nn.Module):
             raise ValueError(f"deformable_every must be >= 1.")
 
         pf = _pool_factor(pooling)
-        eff_wavelet_ch = wavelet_channels if use_frequency_pyramid else channels
+        # CORR-10:
+        # Internal Haar decomposition always produces `channels` feature maps
+        # (one LL, LH, HL, HH per input channel). The external wavelet encoder
+        # is only used later by the cross-level descriptor.
+        eff_wavelet_ch = channels if use_frequency_pyramid else wavelet_channels
 
         token_dim: int = (
             pf * channels + pf * _CONFIDENCE_CHANNELS
@@ -1029,9 +1035,10 @@ class UltimateCycleSpinning(nn.Module):
         # power-of-two ladder.
         num_heads = _largest_divisor_head_count(token_dim, candidates=(num_heads, *_HEAD_COUNT_CANDIDATES))
 
+        cross_wavelet_ch = wavelet_channels
         level_token_dim: int = (
             pf * channels + pf * _CONFIDENCE_CHANNELS
-            + pf * eff_wavelet_ch + pf * structure_channels
+            + pf * cross_wavelet_ch + pf * structure_channels
             + _LEVEL_STAT_DIM
         )
         # CORR-9: same auto-selection for the cross-level token dimension.
@@ -1146,6 +1153,7 @@ class UltimateCycleSpinning(nn.Module):
         """Decompose one shift's tensor into (fine, medium, coarse)."""
         if self.use_frequency_pyramid and self.freq_pyramid is not None:
             ll, lh, hl, hh = self.freq_pyramid(x)
+
             return hh + hl + lh, x, ll
         return x, x, x
 
