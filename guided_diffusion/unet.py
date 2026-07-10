@@ -731,6 +731,13 @@ class UNetModel(nn.Module):
                 struct_tensor_at_bottleneck
             )
 
+            print("\n===== Physics Bias =====")
+            print("shape :", physics_attention_bias.shape)
+            print("min   :", physics_attention_bias.min().item())
+            print("max   :", physics_attention_bias.max().item())
+            print("mean  :", physics_attention_bias.mean().item())
+            print("========================")
+
         h = self.middle_block(
             h, emb, physics_attention_bias=physics_attention_bias
         )
