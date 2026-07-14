@@ -1,0 +1,165 @@
+Logging to ./logs/dgxa_home_2026-07-14-14-19-49
+Training dataset: /dgxa_home/se24ucse043/datasets/2750
+Validation dataset: /dgxa_home/se24ucse043/datasets/2750
+Args: Namespace(in_channels=3, num_channels=192, num_res_blocks=2, num_heads=4, num_heads_upsample=-1, num_head_channels=-1, attention_resolutions='32,16,8', dropout=0.0, class_cond=False, use_checkpoint=True, use_scale_shift_norm=True, resblock_updown=True, use_fp16=False, learn_sigma=True, diffusion_steps=1000, noise_schedule='linear', timestep_respacing='100', use_kl=False, predict_xstart=False, rescale_timesteps=True, rescale_learned_sigmas=False, large_size=64, small_size=64, log_interval=50, save_interval=500, val_samples=40, batch_size=4, use_ddim=False, microbatch=1, lr_anneal_steps=5000, weight_decay=0.0, seed=123, ema_rate='', lr=0.0001, fp16_scale_growth=0.001, schedule_sampler='uniform', log_path='./logs', train_dir='/dgxa_home/se24ucse043/datasets/2750', val_dir='/dgxa_home/se24ucse043/datasets/2750', resume_checkpoint='')
+
+Creating model...
+Creating data loaders...
+Training...
+	Step =     0,  PSNR: 10.23,  SSIM: 0.013,  MSE: 9.9e-02,  Loss: 0.00e+00,  Net training time: 37.9s,  Net validation time: 0.0s
+	Step =    50,  PSNR: 11.80,  SSIM: 0.026,  MSE: 7.2e-02,  Loss: 2.02e+06,  Net training time: 70.2s,  Net validation time: 36.7s
+New best PSNR: 11.80, SSIM: 0.026
+New best maximum PSNR: 11.80
+	Step =   100,  PSNR: 12.35,  SSIM: 0.043,  MSE: 6.5e-02,  Loss: 9.27e+04,  Net training time: 122.3s,  Net validation time: 73.4s
+New best PSNR: 12.35, SSIM: 0.043
+New best maximum PSNR: 12.35
+	Step =   150,  PSNR: 12.52,  SSIM: 0.046,  MSE: 6.3e-02,  Loss: 2.29e+04,  Net training time: 176.0s,  Net validation time: 109.7s
+New best PSNR: 12.52, SSIM: 0.046
+New best maximum PSNR: 12.52
+	Step =   200,  PSNR: 12.61,  SSIM: 0.049,  MSE: 6.2e-02,  Loss: 1.82e+04,  Net training time: 230.0s,  Net validation time: 146.1s
+New best PSNR: 12.61, SSIM: 0.049
+New best maximum PSNR: 12.61
+	Step =   250,  PSNR: 12.80,  SSIM: 0.054,  MSE: 6.0e-02,  Loss: 6.97e+03,  Net training time: 282.7s,  Net validation time: 182.7s
+New best PSNR: 12.80, SSIM: 0.054
+New best maximum PSNR: 12.80
+	Step =   300,  PSNR: 12.66,  SSIM: 0.053,  MSE: 6.2e-02,  Loss: 5.19e+03,  Net training time: 335.6s,  Net validation time: 219.3s
+	Step =   350,  PSNR: 12.80,  SSIM: 0.058,  MSE: 6.0e-02,  Loss: 3.16e+03,  Net training time: 367.7s,  Net validation time: 256.2s
+New best PSNR: 12.80, SSIM: 0.058
+New best maximum PSNR: 12.80
+	Step =   400,  PSNR: 12.83,  SSIM: 0.060,  MSE: 6.0e-02,  Loss: 1.46e+03,  Net training time: 421.5s,  Net validation time: 293.4s
+New best PSNR: 12.83, SSIM: 0.060
+New best maximum PSNR: 12.83
+	Step =   450,  PSNR: 12.84,  SSIM: 0.058,  MSE: 6.0e-02,  Loss: 1.02e+03,  Net training time: 473.5s,  Net validation time: 329.7s
+New best PSNR: 12.84, SSIM: 0.058
+New best maximum PSNR: 12.84
+	Step =   500,  PSNR: 12.89,  SSIM: 0.062,  MSE: 5.9e-02,  Loss: 1.29e+03,  Net training time: 527.9s,  Net validation time: 366.1s
+New best PSNR: 12.89, SSIM: 0.062
+New best maximum PSNR: 12.89
+Saving latest model
+	Step =   550,  PSNR: 12.91,  SSIM: 0.062,  MSE: 5.9e-02,  Loss: 6.55e+02,  Net training time: 592.3s,  Net validation time: 402.6s
+New best PSNR: 12.91, SSIM: 0.062
+New best maximum PSNR: 12.91
+	Step =   600,  PSNR: 12.93,  SSIM: 0.063,  MSE: 5.8e-02,  Loss: 6.03e+02,  Net training time: 646.0s,  Net validation time: 439.4s
+New best PSNR: 12.93, SSIM: 0.063
+New best maximum PSNR: 12.93
+	Step =   650,  PSNR: 12.94,  SSIM: 0.063,  MSE: 5.8e-02,  Loss: 5.46e+02,  Net training time: 700.0s,  Net validation time: 476.2s
+New best PSNR: 12.94, SSIM: 0.063
+New best maximum PSNR: 12.94
+	Step =   700,  PSNR: 12.94,  SSIM: 0.063,  MSE: 5.9e-02,  Loss: 4.55e+02,  Net training time: 754.7s,  Net validation time: 513.2s
+	Step =   750,  PSNR: 13.00,  SSIM: 0.065,  MSE: 5.8e-02,  Loss: 3.41e+02,  Net training time: 786.7s,  Net validation time: 549.8s
+New best PSNR: 13.00, SSIM: 0.065
+New best maximum PSNR: 13.00
+	Step =   800,  PSNR: 12.97,  SSIM: 0.066,  MSE: 5.8e-02,  Loss: 5.66e+02,  Net training time: 840.7s,  Net validation time: 586.6s
+	Step =   850,  PSNR: 13.06,  SSIM: 0.068,  MSE: 5.7e-02,  Loss: 4.80e+02,  Net training time: 872.8s,  Net validation time: 623.9s
+New best PSNR: 13.06, SSIM: 0.068
+New best maximum PSNR: 13.06
+	Step =   900,  PSNR: 13.00,  SSIM: 0.068,  MSE: 5.8e-02,  Loss: 2.80e+02,  Net training time: 926.5s,  Net validation time: 660.5s
+	Step =   950,  PSNR: 13.02,  SSIM: 0.069,  MSE: 5.8e-02,  Loss: 1.78e+02,  Net training time: 958.4s,  Net validation time: 697.2s
+	Step =  1000,  PSNR: 13.01,  SSIM: 0.069,  MSE: 5.8e-02,  Loss: 2.39e+02,  Net training time: 990.3s,  Net validation time: 734.8s
+Saving latest model
+	Step =  1050,  PSNR: 13.04,  SSIM: 0.069,  MSE: 5.8e-02,  Loss: 4.15e+02,  Net training time: 1032.0s,  Net validation time: 771.7s
+	Step =  1100,  PSNR: 13.09,  SSIM: 0.070,  MSE: 5.7e-02,  Loss: 2.35e+02,  Net training time: 1064.1s,  Net validation time: 808.5s
+New best PSNR: 13.09, SSIM: 0.070
+New best maximum PSNR: 13.09
+	Step =  1150,  PSNR: 13.06,  SSIM: 0.072,  MSE: 5.7e-02,  Loss: 2.23e+02,  Net training time: 1119.0s,  Net validation time: 845.4s
+	Step =  1200,  PSNR: 13.09,  SSIM: 0.072,  MSE: 5.7e-02,  Loss: 2.22e+02,  Net training time: 1151.1s,  Net validation time: 881.9s
+	Step =  1250,  PSNR: 13.08,  SSIM: 0.071,  MSE: 5.7e-02,  Loss: 1.33e+02,  Net training time: 1182.6s,  Net validation time: 918.5s
+	Step =  1300,  PSNR: 13.05,  SSIM: 0.072,  MSE: 5.8e-02,  Loss: 9.68e+01,  Net training time: 1214.4s,  Net validation time: 955.2s
+	Step =  1350,  PSNR: 13.14,  SSIM: 0.072,  MSE: 5.6e-02,  Loss: 2.41e+02,  Net training time: 1246.5s,  Net validation time: 991.9s
+New best PSNR: 13.14, SSIM: 0.072
+New best maximum PSNR: 13.14
+	Step =  1400,  PSNR: 13.15,  SSIM: 0.074,  MSE: 5.6e-02,  Loss: 9.12e+01,  Net training time: 1300.5s,  Net validation time: 1028.3s
+New best PSNR: 13.15, SSIM: 0.074
+New best maximum PSNR: 13.15
+	Step =  1450,  PSNR: 13.08,  SSIM: 0.073,  MSE: 5.7e-02,  Loss: 1.38e+02,  Net training time: 1354.4s,  Net validation time: 1064.6s
+	Step =  1500,  PSNR: 13.08,  SSIM: 0.075,  MSE: 5.7e-02,  Loss: 1.50e+02,  Net training time: 1386.3s,  Net validation time: 1101.2s
+Saving latest model
+	Step =  1550,  PSNR: 13.09,  SSIM: 0.074,  MSE: 5.7e-02,  Loss: 1.24e+02,  Net training time: 1429.2s,  Net validation time: 1138.5s
+	Step =  1600,  PSNR: 13.08,  SSIM: 0.073,  MSE: 5.7e-02,  Loss: 1.61e+02,  Net training time: 1461.5s,  Net validation time: 1175.3s
+	Step =  1650,  PSNR: 13.13,  SSIM: 0.076,  MSE: 5.7e-02,  Loss: 9.92e+01,  Net training time: 1493.6s,  Net validation time: 1212.4s
+	Step =  1700,  PSNR: 13.05,  SSIM: 0.076,  MSE: 5.8e-02,  Loss: 1.16e+02,  Net training time: 1525.9s,  Net validation time: 1249.6s
+	Step =  1750,  PSNR: 13.18,  SSIM: 0.077,  MSE: 5.6e-02,  Loss: 1.01e+02,  Net training time: 1558.0s,  Net validation time: 1286.2s
+New best PSNR: 13.18, SSIM: 0.077
+New best maximum PSNR: 13.18
+	Step =  1800,  PSNR: 13.23,  SSIM: 0.077,  MSE: 5.6e-02,  Loss: 7.59e+01,  Net training time: 1612.1s,  Net validation time: 1322.8s
+New best PSNR: 13.23, SSIM: 0.077
+New best maximum PSNR: 13.23
+	Step =  1850,  PSNR: 13.21,  SSIM: 0.078,  MSE: 5.6e-02,  Loss: 1.12e+02,  Net training time: 1666.0s,  Net validation time: 1359.2s
+	Step =  1900,  PSNR: 13.13,  SSIM: 0.076,  MSE: 5.7e-02,  Loss: 6.63e+01,  Net training time: 1697.9s,  Net validation time: 1396.0s
+	Step =  1950,  PSNR: 13.19,  SSIM: 0.078,  MSE: 5.6e-02,  Loss: 5.57e+01,  Net training time: 1730.1s,  Net validation time: 1432.7s
+	Step =  2000,  PSNR: 13.16,  SSIM: 0.076,  MSE: 5.7e-02,  Loss: 1.26e+02,  Net training time: 1762.3s,  Net validation time: 1469.5s
+Saving latest model
+	Step =  2050,  PSNR: 13.19,  SSIM: 0.081,  MSE: 5.6e-02,  Loss: 7.50e+01,  Net training time: 1804.3s,  Net validation time: 1506.7s
+	Step =  2100,  PSNR: 13.18,  SSIM: 0.078,  MSE: 5.6e-02,  Loss: 4.56e+01,  Net training time: 1836.1s,  Net validation time: 1543.4s
+	Step =  2150,  PSNR: 13.20,  SSIM: 0.082,  MSE: 5.6e-02,  Loss: 2.26e+01,  Net training time: 1868.2s,  Net validation time: 1580.5s
+	Step =  2200,  PSNR: 13.16,  SSIM: 0.081,  MSE: 5.7e-02,  Loss: 6.72e+01,  Net training time: 1900.3s,  Net validation time: 1617.6s
+	Step =  2250,  PSNR: 13.19,  SSIM: 0.082,  MSE: 5.6e-02,  Loss: 1.21e+02,  Net training time: 1932.5s,  Net validation time: 1654.6s
+	Step =  2300,  PSNR: 13.19,  SSIM: 0.079,  MSE: 5.6e-02,  Loss: 4.86e+01,  Net training time: 1964.8s,  Net validation time: 1691.2s
+	Step =  2350,  PSNR: 13.21,  SSIM: 0.083,  MSE: 5.6e-02,  Loss: 7.40e+01,  Net training time: 1997.0s,  Net validation time: 1728.4s
+	Step =  2400,  PSNR: 13.18,  SSIM: 0.081,  MSE: 5.6e-02,  Loss: 6.77e+01,  Net training time: 2029.2s,  Net validation time: 1765.3s
+	Step =  2450,  PSNR: 13.22,  SSIM: 0.082,  MSE: 5.6e-02,  Loss: 5.52e+01,  Net training time: 2061.4s,  Net validation time: 1802.3s
+	Step =  2500,  PSNR: 12.91,  SSIM: 0.075,  MSE: 6.0e-02,  Loss: 4.60e+02,  Net training time: 2093.3s,  Net validation time: 1839.4s
+Saving latest model
+	Step =  2550,  PSNR: 13.15,  SSIM: 0.081,  MSE: 5.7e-02,  Loss: 1.22e+02,  Net training time: 2135.7s,  Net validation time: 1876.7s
+	Step =  2600,  PSNR: 13.17,  SSIM: 0.080,  MSE: 5.7e-02,  Loss: 6.52e+01,  Net training time: 2167.7s,  Net validation time: 1913.8s
+	Step =  2650,  PSNR: 13.16,  SSIM: 0.082,  MSE: 5.7e-02,  Loss: 5.02e+01,  Net training time: 2199.9s,  Net validation time: 1951.1s
+	Step =  2700,  PSNR: 13.15,  SSIM: 0.082,  MSE: 5.7e-02,  Loss: 3.79e+01,  Net training time: 2232.3s,  Net validation time: 1988.1s
+	Step =  2750,  PSNR: 13.17,  SSIM: 0.081,  MSE: 5.6e-02,  Loss: 4.05e+01,  Net training time: 2264.6s,  Net validation time: 2025.3s
+	Step =  2800,  PSNR: 13.20,  SSIM: 0.084,  MSE: 5.6e-02,  Loss: 5.43e+01,  Net training time: 2296.9s,  Net validation time: 2062.2s
+	Step =  2850,  PSNR: 13.19,  SSIM: 0.084,  MSE: 5.6e-02,  Loss: 4.97e+01,  Net training time: 2329.0s,  Net validation time: 2099.0s
+	Step =  2900,  PSNR: 13.21,  SSIM: 0.082,  MSE: 5.6e-02,  Loss: 6.69e+01,  Net training time: 2360.9s,  Net validation time: 2135.5s
+	Step =  2950,  PSNR: 13.21,  SSIM: 0.083,  MSE: 5.6e-02,  Loss: 7.64e+01,  Net training time: 2393.0s,  Net validation time: 2172.1s
+	Step =  3000,  PSNR: 13.22,  SSIM: 0.084,  MSE: 5.6e-02,  Loss: 2.99e+01,  Net training time: 2424.8s,  Net validation time: 2208.4s
+Saving latest model
+	Step =  3050,  PSNR: 13.23,  SSIM: 0.084,  MSE: 5.6e-02,  Loss: 2.73e+01,  Net training time: 2468.1s,  Net validation time: 2245.2s
+New best PSNR: 13.23, SSIM: 0.084
+New best maximum PSNR: 13.23
+	Step =  3100,  PSNR: 13.22,  SSIM: 0.083,  MSE: 5.6e-02,  Loss: 2.86e+01,  Net training time: 2522.7s,  Net validation time: 2282.1s
+	Step =  3150,  PSNR: 13.23,  SSIM: 0.084,  MSE: 5.6e-02,  Loss: 3.22e+01,  Net training time: 2554.5s,  Net validation time: 2318.8s
+	Step =  3200,  PSNR: 13.25,  SSIM: 0.084,  MSE: 5.6e-02,  Loss: 3.44e+01,  Net training time: 2586.6s,  Net validation time: 2355.5s
+New best PSNR: 13.25, SSIM: 0.084
+New best maximum PSNR: 13.25
+	Step =  3250,  PSNR: 13.21,  SSIM: 0.083,  MSE: 5.6e-02,  Loss: 5.95e+01,  Net training time: 2637.9s,  Net validation time: 2387.9s
+	Step =  3300,  PSNR: 13.24,  SSIM: 0.083,  MSE: 5.6e-02,  Loss: 4.79e+01,  Net training time: 2665.5s,  Net validation time: 2420.1s
+	Step =  3350,  PSNR: 13.22,  SSIM: 0.085,  MSE: 5.6e-02,  Loss: 2.68e+01,  Net training time: 2692.4s,  Net validation time: 2452.1s
+	Step =  3400,  PSNR: 13.18,  SSIM: 0.084,  MSE: 5.6e-02,  Loss: 4.15e+01,  Net training time: 2719.6s,  Net validation time: 2484.9s
+	Step =  3450,  PSNR: 13.21,  SSIM: 0.085,  MSE: 5.6e-02,  Loss: 5.80e+01,  Net training time: 2747.1s,  Net validation time: 2517.7s
+	Step =  3500,  PSNR: 13.25,  SSIM: 0.086,  MSE: 5.6e-02,  Loss: 4.28e+01,  Net training time: 2774.7s,  Net validation time: 2552.6s
+Saving latest model
+	Step =  3550,  PSNR: 13.21,  SSIM: 0.083,  MSE: 5.6e-02,  Loss: 3.78e+01,  Net training time: 2819.7s,  Net validation time: 2590.1s
+	Step =  3600,  PSNR: 13.23,  SSIM: 0.084,  MSE: 5.6e-02,  Loss: 5.40e+01,  Net training time: 2852.6s,  Net validation time: 2627.5s
+	Step =  3650,  PSNR: 13.24,  SSIM: 0.083,  MSE: 5.6e-02,  Loss: 4.50e+01,  Net training time: 2886.0s,  Net validation time: 2665.0s
+	Step =  3700,  PSNR: 13.21,  SSIM: 0.083,  MSE: 5.6e-02,  Loss: 5.34e+01,  Net training time: 2919.5s,  Net validation time: 2702.2s
+	Step =  3750,  PSNR: 13.25,  SSIM: 0.086,  MSE: 5.6e-02,  Loss: 2.21e+01,  Net training time: 2953.0s,  Net validation time: 2739.6s
+New best PSNR: 13.25, SSIM: 0.086
+New best maximum PSNR: 13.25
+	Step =  3800,  PSNR: 13.29,  SSIM: 0.086,  MSE: 5.5e-02,  Loss: 5.13e+01,  Net training time: 3009.1s,  Net validation time: 2777.4s
+New best PSNR: 13.29, SSIM: 0.086
+New best maximum PSNR: 13.29
+	Step =  3850,  PSNR: 13.24,  SSIM: 0.086,  MSE: 5.6e-02,  Loss: 5.08e+01,  Net training time: 3064.6s,  Net validation time: 2814.7s
+	Step =  3900,  PSNR: 13.25,  SSIM: 0.086,  MSE: 5.6e-02,  Loss: 2.96e+01,  Net training time: 3097.6s,  Net validation time: 2852.5s
+	Step =  3950,  PSNR: 13.23,  SSIM: 0.085,  MSE: 5.6e-02,  Loss: 3.13e+01,  Net training time: 3130.6s,  Net validation time: 2889.7s
+	Step =  4000,  PSNR: 13.24,  SSIM: 0.084,  MSE: 5.6e-02,  Loss: 2.06e+01,  Net training time: 3163.1s,  Net validation time: 2926.3s
+Saving latest model
+	Step =  4050,  PSNR: 13.25,  SSIM: 0.087,  MSE: 5.6e-02,  Loss: 3.89e+01,  Net training time: 3207.6s,  Net validation time: 2963.0s
+	Step =  4100,  PSNR: 13.25,  SSIM: 0.084,  MSE: 5.6e-02,  Loss: 1.85e+01,  Net training time: 3240.3s,  Net validation time: 3000.2s
+	Step =  4150,  PSNR: 13.24,  SSIM: 0.086,  MSE: 5.6e-02,  Loss: 3.05e+01,  Net training time: 3273.3s,  Net validation time: 3037.3s
+	Step =  4200,  PSNR: 13.27,  SSIM: 0.085,  MSE: 5.5e-02,  Loss: 3.79e+01,  Net training time: 3306.0s,  Net validation time: 3073.9s
+	Step =  4250,  PSNR: 13.28,  SSIM: 0.087,  MSE: 5.5e-02,  Loss: 3.41e+01,  Net training time: 3338.6s,  Net validation time: 3110.6s
+	Step =  4300,  PSNR: 13.26,  SSIM: 0.084,  MSE: 5.6e-02,  Loss: 3.67e+01,  Net training time: 3371.1s,  Net validation time: 3147.9s
+	Step =  4350,  PSNR: 13.27,  SSIM: 0.085,  MSE: 5.6e-02,  Loss: 2.89e+01,  Net training time: 3403.6s,  Net validation time: 3184.8s
+	Step =  4400,  PSNR: 13.25,  SSIM: 0.086,  MSE: 5.6e-02,  Loss: 2.33e+01,  Net training time: 3436.3s,  Net validation time: 3221.5s
+	Step =  4450,  PSNR: 13.27,  SSIM: 0.086,  MSE: 5.6e-02,  Loss: 1.54e+01,  Net training time: 3469.0s,  Net validation time: 3258.7s
+	Step =  4500,  PSNR: 13.26,  SSIM: 0.087,  MSE: 5.6e-02,  Loss: 3.50e+01,  Net training time: 3502.2s,  Net validation time: 3295.9s
+Saving latest model
+	Step =  4550,  PSNR: 13.26,  SSIM: 0.086,  MSE: 5.6e-02,  Loss: 2.66e+01,  Net training time: 3546.6s,  Net validation time: 3333.7s
+	Step =  4600,  PSNR: 13.26,  SSIM: 0.088,  MSE: 5.6e-02,  Loss: 2.66e+01,  Net training time: 3579.4s,  Net validation time: 3371.1s
+	Step =  4650,  PSNR: 13.27,  SSIM: 0.086,  MSE: 5.6e-02,  Loss: 1.76e+01,  Net training time: 3612.7s,  Net validation time: 3408.3s
+	Step =  4700,  PSNR: 13.27,  SSIM: 0.084,  MSE: 5.6e-02,  Loss: 2.68e+01,  Net training time: 3646.3s,  Net validation time: 3445.9s
+	Step =  4750,  PSNR: 13.27,  SSIM: 0.087,  MSE: 5.5e-02,  Loss: 2.21e+01,  Net training time: 3679.4s,  Net validation time: 3482.5s
+	Step =  4800,  PSNR: 13.26,  SSIM: 0.087,  MSE: 5.6e-02,  Loss: 1.91e+01,  Net training time: 3712.6s,  Net validation time: 3519.7s
+	Step =  4850,  PSNR: 13.26,  SSIM: 0.088,  MSE: 5.6e-02,  Loss: 2.84e+01,  Net training time: 3745.2s,  Net validation time: 3555.7s
+	Step =  4900,  PSNR: 13.28,  SSIM: 0.086,  MSE: 5.5e-02,  Loss: 3.59e+01,  Net training time: 3777.2s,  Net validation time: 3592.0s
+	Step =  4950,  PSNR: 13.29,  SSIM: 0.087,  MSE: 5.5e-02,  Loss: 2.20e+01,  Net training time: 3809.0s,  Net validation time: 3628.4s
+	Step =  5000,  PSNR: 13.27,  SSIM: 0.089,  MSE: 5.6e-02,  Loss: 1.92e+01,  Net training time: 3840.5s,  Net validation time: 3665.1s
+Saving latest model
