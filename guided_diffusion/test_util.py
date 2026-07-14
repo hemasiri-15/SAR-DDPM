@@ -68,7 +68,8 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
     net_time = 0.0 # sum evaluation times
     
     with torch.no_grad():
-        _, noisy_tensor, _ = next(iter(loader))
+        batch = next(iter(loader))
+        clean_tensor, noisy_tensor, image_filename = batch[:3]
         if test:
             # Perform a single pass to warm up the model on the GPU
             test_tensor = torch.empty_like(noisy_tensor).to(device)
@@ -95,7 +96,8 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
 
 
         for batch_idx, data_tuple in enumerate(progress_bar):
-            clean_tensor, noisy_tensor, image_filename = data_tuple
+            clean_tensor, noisy_tensor, image_filename = data_tuple[:3]
+
             clean_tensor = clean_tensor.to(device)
             noisy_tensor = noisy_tensor.to(device)
 
@@ -115,10 +117,6 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
 
                 # Get number of cycle spins
                 N = int(np.ceil(num_rows / cycle_width) * np.ceil(num_cols / cycle_width))
-                aggregator = build_cycle_spinning(
-                    method="learnable",
-                    num_shifts=N,
-                ).to(device)
 
                 spin_outputs = []
                 from structdiff.sampling.cycle_spinning.engine import (

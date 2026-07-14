@@ -21,8 +21,8 @@ def default_args(test=False):
     else: # Train
         defaults = dict(
             log_path = "./logs",
-            train_dir = "../DSIFN/train", #"../sen12/opt/train", #
-            val_dir = "../DSIFN/val", #"../sen12/opt/val", #
+            train_dir = "./Training_Data", #"../sen12/opt/train", #
+            val_dir = "./Training_Data", #"../sen12/opt/val", #
             val_samples = 40,
             log_interval = 100,
             save_interval = 1000,

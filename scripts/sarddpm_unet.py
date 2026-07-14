@@ -168,7 +168,7 @@ def main():
             
             progress_bar = tqdm(train_loader, desc=f"PSNR: 00.00/00.00, SSIM: 0.000/0.000", unit='batch')
             for batch_idx, data_tuple in enumerate(progress_bar):
-                clean_tensor, noisy_tensor, image_filename = data_tuple
+                clean_tensor, noisy_tensor, image_filename = data_tuple[:3]
                 clean_tensor = clean_tensor.to(dist_util.dev())
                 noisy_tensor = noisy_tensor.to(dist_util.dev())
 
@@ -404,12 +404,13 @@ def evaluate(loader, device, images_dir, unet_model, batch_size, cycle_spinning=
     net_time = 0.0 # sum evaluation times
     
     with torch.no_grad():
-        _, noisy_tensor, _ = next(iter(loader))
+        batch = next(iter(loader))
+        noisy_tensor = batch[1]
 
         progress_bar = tqdm(loader, desc=f"[{'Test' if test else 'Validation'}] PSNR: 00.00/00.00, SSIM: 0.000/0.000", unit='batch')
 
         for batch_idx, data_tuple in enumerate(progress_bar):
-            clean_tensor, noisy_tensor, image_filename = data_tuple
+            clean_tensor, noisy_tensor, image_filename = data_tuple[:3]
             clean_tensor = clean_tensor.to(device)
             noisy_tensor = noisy_tensor.to(device)
             

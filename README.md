@@ -1,11 +1,11 @@
-# StructDiff-SAR
+# PhysSAR-Diff
 
-### Physics-Aware Transformer-Guided Diffusion for SAR Image Despeckling
+### Physics-Guided Conditional Diffusion for SAR Image Despeckling
 
-[![Python](https://img.shields.io/badge/python-3.x-blue.svg)](#)
-[![PyTorch](https://img.shields.io/badge/pytorch-%3E%3D1.x-ee4c2c.svg)](#)
-[![License](https://img.shields.io/badge/license-TBD-lightgrey.svg)](#)
-[![Status](https://img.shields.io/badge/status-research--in--progress-yellow.svg)](#)
+![Python](https://img.shields.io/badge/Python-3.12-blue)
+![PyTorch](https://img.shields.io/badge/PyTorch-2.x-red)
+![License](https://img.shields.io/badge/License-MIT-green)
+![Status](https://img.shields.io/badge/Status-Research-orange)
 
 StructDiff-SAR is a research framework for Synthetic Aperture Radar (SAR)
 image despeckling built on top of a Denoising Diffusion Probabilistic
