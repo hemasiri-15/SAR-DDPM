@@ -1,6 +1,7 @@
 from abc import abstractmethod
 
 import math
+import torch
 
 import numpy as np
 import torch as th
@@ -29,6 +30,18 @@ from structdiff.transformer.transformer_block import PhysicsTransformerBlock
 from structdiff.transformer.physics_attention_bias_builder import (
     PhysicsAttentionBiasBuilder,
 )
+
+# ====================================================
+# Debug switches
+# ====================================================
+
+USE_LOOK = True
+USE_STRUCT = True
+USE_MS_STRUCT = True
+USE_SPECTRAL = True
+USE_WAVELET = True
+USE_PHYSICS = True
+USE_MS = True
 
 class AttentionPool2d(nn.Module):
     """
@@ -695,22 +708,103 @@ class UNetModel(nn.Module):
 
         hs = []
         emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
+        time_emb = emb.detach()
 
-        if look_num is not None:
-            emb = emb + self.look_emb(look_num)
+        look_emb = None
+        struct_emb = None
+        ms_struct_emb = None
+        spectral_emb = None
+        wavelet_emb = None
 
-        if struct_tensor is not None:
-            emb = emb + self.struct_encoder(struct_tensor)
+        if USE_LOOK and look_num is not None:
+            look_emb = self.look_emb(look_num)
+            emb = emb + look_emb
 
-        if struct_tensors is not None:
+        if USE_PHYSICS and struct_tensor is not None:
+            struct_emb = self.struct_encoder(struct_tensor)
+            emb = emb + struct_emb
+
+        if USE_MS and struct_tensors is not None:
             st1, st2, st3 = struct_tensors
-            emb = emb + self.ms_struct_encoder(st1, st2, st3)
+            ms_emb = self.ms_struct_encoder(st1, st2, st3)
+            emb = emb + ms_struct_emb
 
-        if spectral_tensor is not None:
-            emb = emb + self.tensor_spectral_encoder(spectral_tensor)
+        if USE_SPECTRAL and spectral_tensor is not None:
+            spec_emb = self.tensor_spectral_encoder(spectral_tensor)
+            emb = emb + spectral_emb
 
-        if wavelet_tensor is not None:
-            emb = emb + self.wavelet_encoder(wavelet_tensor)
+        if USE_WAVELET and wavelet_tensor is not None:
+            wave_emb = self.wavelet_encoder(wavelet_tensor)
+            emb = emb + wavelet_emb
+
+        if (
+            look_num is not None
+            and not hasattr(self, "_embedding_stats_printed")
+        ):
+            self._embedding_stats_printed = True
+
+            print("\n========== EMBEDDING AUDIT ==========")
+
+            def stats(name, x):
+                print(
+                    f"{name:15s}"
+                    f" mean={x.mean().item():.4f}"
+                    f" std={x.std().item():.4f}"
+                    f" max={x.abs().max().item():.4f}"
+                    f" nan={th.isnan(x).any().item()}"
+                )
+
+            stats("Time", time_emb)
+
+            if look_emb is not None:
+                stats("Look", look_emb)
+
+            if ms_struct_emb is not None:
+                stats("MS Struct", ms_struct_emb)
+
+            if spectral_emb is not None:
+                stats("Spectral", spectral_emb)
+
+            if wavelet_emb is not None:
+                stats("Wavelet", wavelet_emb)
+
+            print("===============================\n")
+
+        if not hasattr(self, "_embedding_stats_printed"):
+
+            def stats(name, x):
+                if x is None:
+                    return
+                x = x.float()
+                print(
+                    f"{name:12s}"
+                    f" mean={x.mean():.5f}"
+                    f" std={x.std():.5f}"
+                    f" max={x.abs().max():.5f}"
+                    f" nan={torch.isnan(x).any().item()}"
+                )
+
+            print("\n========== EMBEDDING AUDIT ==========")
+            stats("Time", time_emb)
+
+            if look_emb is not None:
+                stats("Look", look_emb)
+
+            if struct_emb is not None:
+                stats("Struct", struct_emb)
+
+            if ms_struct_emb is not None:
+                stats("MS Struct", ms_struct_emb)
+
+            if spectral_emb is not None:
+                stats("Spectral", spectral_emb)
+
+            if wavelet_emb is not None:
+                stats("Wavelet", wavelet_emb)
+
+            print("=====================================\n")
+
+            self._embedding_stats_printed = True
 
         h = x.type(self.dtype)
         for module in self.input_blocks:
@@ -731,12 +825,32 @@ class UNetModel(nn.Module):
                 struct_tensor_at_bottleneck
             )
 
-            print("\n===== Physics Bias =====")
-            print("shape :", physics_attention_bias.shape)
-            print("min   :", physics_attention_bias.min().item())
-            print("max   :", physics_attention_bias.max().item())
-            print("mean  :", physics_attention_bias.mean().item())
-            print("========================")
+            if (
+                physics_attention_bias is not None
+                and not hasattr(self, "_physics_stats_printed")
+            ):
+                x = physics_attention_bias.float()
+
+                print("\n===== Physics Bias =====")
+                print("shape :", physics_attention_bias.shape)
+                print("min   :", physics_attention_bias.min().item())
+                print("max   :", physics_attention_bias.max().item())
+                print("mean  :", physics_attention_bias.mean().item())
+                print("========================")
+
+                self._physics_stats_printed = True
+
+        print("\n===== BOTTLENECK AUDIT =====")
+        print("h mean :", h.mean().item())
+        print("h std  :", h.std().item())
+        print("h max  :", h.abs().max().item())
+
+        if physics_attention_bias is not None:
+            print("physics bias mean:", physics_attention_bias.mean().item())
+            print("physics bias std :", physics_attention_bias.std().item())
+            print("physics bias max :", physics_attention_bias.abs().max().item())
+        else:
+            print("physics bias = None")
 
         h = self.middle_block(
             h, emb, physics_attention_bias=physics_attention_bias
@@ -974,6 +1088,15 @@ class EncoderUNetModel(nn.Module):
         """
         emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
 
+        emb = emb.to(self.dtype)
+
+        time_emb = emb.detach()
+
+        look_emb = None
+        ms_emb = None
+        spec_emb = None
+        wave_emb = None
+
         results = []
         h = x.type(self.dtype)
         for module in self.input_blocks:
@@ -981,6 +1104,17 @@ class EncoderUNetModel(nn.Module):
             if self.pool.startswith("spatial"):
                 results.append(h.type(x.dtype).mean(dim=(2, 3)))
         h = self.middle_block(h, emb)
+
+        if not hasattr(self, "_physics_stats_printed"):
+            self._physics_stats_printed = True
+
+            print("\n========== PHYSICS TRANSFORMER ==========")
+            print("Feature shape:", tuple(h.shape))
+            print("mean:", h.mean().item())
+            print("std :", h.std().item())
+            print("max :", h.abs().max().item())
+            print("nan :", th.isnan(h).any().item())
+            print("========================================\n")
 
         if self.pool.startswith("spatial"):
             results.append(h.type(x.dtype).mean(dim=(2, 3)))

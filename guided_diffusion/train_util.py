@@ -188,7 +188,20 @@ class TrainLoop:
                 logger.log(f"Loading model from checkpoint: {self.resume_checkpoint}...")
                 state_dict = dist_util.load_state_dict(self.resume_checkpoint, map_location=dist_util.dev())
                 state_dict = self.modify_state_dict(state_dict) # modify size of state dict if necessary
-                self.model.load_state_dict(state_dict, strict=False)
+                missing, unexpected = self.model.load_state_dict(
+                    state_dict,
+                    strict=False,
+                )
+
+                print("\n========== CHECKPOINT AUDIT ==========")
+                print("Missing keys:", len(missing))
+                for k in missing:
+                    print("  MISSING:", k)
+
+                print("\nUnexpected keys:", len(unexpected))
+                for k in unexpected:
+                    print("  UNEXPECTED:", k)
+                print("======================================\n")
 
         dist_util.sync_params(self.model.parameters())
 
@@ -343,6 +356,30 @@ class TrainLoop:
                 "spectral_tensor": spectral_tensor,
                 "wavelet_tensor": wavelet_tensor,
             }
+
+            if self.step == 0:
+                print("\n========== CONDITIONING TENSOR AUDIT ==========")
+
+                def tensor_stats(name, x):
+                    print(
+                        f"{name:18s}"
+                        f" shape={tuple(x.shape)}"
+                        f" mean={x.mean().item():.4f}"
+                        f" std={x.std().item():.4f}"
+                        f" min={x.min().item():.4f}"
+                        f" max={x.max().item():.4f}"
+                        f" nan={torch.isnan(x).any().item()}"
+                    )
+
+                tensor_stats("Struct S1", struct_tensor_s1)
+                tensor_stats("Struct S2", struct_tensor_s2)
+                tensor_stats("Struct S3", struct_tensor_s3)
+                tensor_stats("Spectral", spectral_tensor)
+                tensor_stats("Wavelet", wavelet_tensor)
+
+                print("Look numbers:", look_num.tolist())
+                print("===============================================\n")
+
             net_loss += self.run_step(clean_tensor, model_kwargs)
 
             self.step += 1

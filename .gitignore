@@ -47,6 +47,6 @@ logs/
 
 #Dataset
 DSIFN/
-
-
-DSIFN/
+AID/
+SAR_despeckling_dataset/
+Training_Data/

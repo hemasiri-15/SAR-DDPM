@@ -156,8 +156,18 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
                         # Unspin the image and add to the averaged image
                         if (first):
                             pred_tensor = (1.0/N)*sample
+
+                            print("=" * 80)
+                            print("row:", row, "col:", col)
+                            print("sample:", sample.shape)
+                            print("pred_tensor:", pred_tensor.shape)
+
                             first = False
                         else:
+                            print("row:", row, "col:", col)
+                            print("sample:", sample.shape)
+                            print("pred_tensor:", pred_tensor.shape)
+
                             pred_tensor[:,:,:, num_rows-row:, num_cols-col:] = pred_tensor[:,:,:, num_rows-row:, num_cols-col:] + (1.0/N)*sample[:,:,:row ,:col ]
                             pred_tensor[:,:,:,:num_rows-row ,:num_cols-col ] = pred_tensor[:,:,:,:num_rows-row ,:num_cols-col ] + (1.0/N)*sample[:,:, row:, col:]
                             pred_tensor[:,:,:,:num_rows-row , num_cols-col:] = pred_tensor[:,:,:,:num_rows-row , num_cols-col:] + (1.0/N)*sample[:,:, row:,:col ]

@@ -430,6 +430,44 @@ class MultiLookDataset(SynthSARDataset):
         # collects a list of ints and converts it to torch.Tensor([...],
         # dtype=torch.int64) of shape [B].  No custom collate_fn is required.
         # -------------------------------------------------------------------
+        if not hasattr(self, "_printed_tensor_stats"):
+
+            print("\n========== CONDITIONING ==========")
+
+            print(
+                "Struct S1:",
+                struct_tensor_s1.min().item(),
+                struct_tensor_s1.max().item(),
+            )
+
+            print(
+                "Struct S2:",
+                struct_tensor_s2.min().item(),
+                struct_tensor_s2.max().item(),
+            )
+
+            print(
+                "Struct S3:",
+                struct_tensor_s3.min().item(),
+                struct_tensor_s3.max().item(),
+            )
+
+            print(
+                "Spectral:",
+                spectral_tensor.min().item(),
+                spectral_tensor.max().item(),
+            )
+
+            print(
+                "Wavelet:",
+                wavelet_tensor.min().item(),
+                wavelet_tensor.max().item(),
+            )
+
+            print("=================================\n")
+
+            self._printed_tensor_stats = True
+
         return (
             torch.tensor(clean_array, dtype=torch.float32),
             torch.tensor(noisy_array, dtype=torch.float32),
