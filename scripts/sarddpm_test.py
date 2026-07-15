@@ -102,112 +102,112 @@ def main():
     logger.log("Training dataset: " + training_args['train_dir'])
     logger.log("Cycle spinning: " + str(args.cycle_spinning))
 
-
-    # SAR Testing
-    if args.sample_to_use == "MAX":
-        print("Cannot compute max sample for SAR images.")
-        exit(1)
-    
-    sar_test_log_folder = os.path.join(
-        log_path,
-        datetime.now().strftime(f"SAR_test_{args.test_dir.split('/')[1]}_%Y-%m-%d-%H-%M-%S"),
-    )
-    logger.configure(dir=sar_test_log_folder, log_suffix="_test", format_strs=["log","csv"])
-
-    logger.log("Training dataset: " + training_args['train_dir'])
-    logger.log("Validation dataset: " + training_args['val_dir'])
-    logger.log("Testing dataset: " + args.test_dir)
-    logger.log("Cycle spinning: " + str(args.cycle_spinning))
-    logger.log("Loading model from checkpoint:" + test_checkpoint)
-    logger.log("Args: " + str(args))
-    logger.log("Training args: " + str(training_args) + "\n")
-    if args.sample_to_use == "LAST":
-        logger.log("!! Used the last sample !!\n")
-    elif args.sample_to_use == "SWEEP":
-        logger.log("!! Averaged the last 8 samples !!\n")
-    else:
-        exit(1)
-
-    def sar_model(noisy_tensor):
-        sample_fn = (
-            diffusion.p_sample_loop if not args.use_ddim else diffusion.ddim_sample_loop
-        )
-        
-        # Otherwise, get the predicted clean image as normal
-        model_kwargs = {'noisy': noisy_tensor}
-
-        pred_tensor = sample_fn(
-            model,
-            noisy_tensor.shape,
-            clip_denoised=True,
-            model_kwargs=model_kwargs,
-        )
-            
-        if args.sample_to_use == "LAST":
-            pred_tensor = pred_tensor[-1]
-        elif args.sample_to_use == "SWEEP":
-            pred_tensor = torch.mean(pred_tensor[-8:], dim=0)
-        else:
-            print("Not a valid 'sample_to_use' string.")
-            exit(1)
-
-        return pred_tensor
-
-    evaluate_sar(sar_model, dist_util.dev(), training_args['in_channels'], training_args['large_size'])
-
-
-def create_argparser():
-    parser = argparse.ArgumentParser()
-    add_dict_to_argparser(parser, default_args(test=True))
-    return parser
-
-
-def get_most_recent_log_folder(logs_dir):
-    folders = [f for f in os.listdir(logs_dir) if os.path.isdir(os.path.join(logs_dir, f))]
-    if len(folders) == 0:
-        raise FileNotFoundError(f"No log folders found in {logs_dir}")
-    date_folders = [(folder, datetime.strptime(folder.split('_')[-1], '%Y-%m-%d-%H-%M-%S')) for folder in folders]
-    most_recent_folder = max(date_folders, key=lambda x: x[1])[0]
-    return os.path.join(logs_dir, most_recent_folder)
-
-
-def parse_args_from_log(log_file):
-    args_dict = {}
-    try:
-        with open(log_file, 'r') as file:
-            for line in file:
-                if line.startswith("Args: Namespace"):
-                    args_str = line.strip().lstrip("Args: Namespace(").rstrip(")")
-                    
-                    # Regex to match key-value pairs, handling quoted values with commas
-                    pattern = re.compile(r"(\w+)=('.*?'|\".*?\"|[^,]+)")
-                    
-                    matches = pattern.findall(args_str)
-                    for key, value in matches:
-                        # Remove the quotes if the value is a quoted string
-                        if value.startswith(("'", '"')) and value.endswith(("'", '"')):
-                            value = value[1:-1]
-                        # Put the value into the correct format
-                        try:
-                            if value.lower() == 'true':
-                                value = True
-                            elif value.lower() == 'false':
-                                value = False
-                            elif value.isdigit():
-                                value = int(value)
-                            else:
-                                try:
-                                    value = float(value)
-                                except ValueError:
-                                    pass  # keep as string if it's neither int nor float
-                        except ValueError:
-                            pass
-                        args_dict[key] = value
-                    break
-    except Exception as e:
-        raise Exception(f"An error occurred while parsing the log file {log_file}: {e}")
-    return args_dict
-
-
-if __name__ == "__main__":
-    main()
+# 
+#     # SAR Testing
+#     if args.sample_to_use == "MAX":
+#         print("Cannot compute max sample for SAR images.")
+#         exit(1)
+#     
+#     sar_test_log_folder = os.path.join(
+#         log_path,
+#         datetime.now().strftime(f"SAR_test_{args.test_dir.split('/')[1]}_%Y-%m-%d-%H-%M-%S"),
+#     )
+#     logger.configure(dir=sar_test_log_folder, log_suffix="_test", format_strs=["log","csv"])
+# 
+#     logger.log("Training dataset: " + training_args['train_dir'])
+#     logger.log("Validation dataset: " + training_args['val_dir'])
+#     logger.log("Testing dataset: " + args.test_dir)
+#     logger.log("Cycle spinning: " + str(args.cycle_spinning))
+#     logger.log("Loading model from checkpoint:" + test_checkpoint)
+#     logger.log("Args: " + str(args))
+#     logger.log("Training args: " + str(training_args) + "\n")
+#     if args.sample_to_use == "LAST":
+#         logger.log("!! Used the last sample !!\n")
+#     elif args.sample_to_use == "SWEEP":
+#         logger.log("!! Averaged the last 8 samples !!\n")
+#     else:
+#         exit(1)
+# 
+#     def sar_model(noisy_tensor):
+#         sample_fn = (
+#             diffusion.p_sample_loop if not args.use_ddim else diffusion.ddim_sample_loop
+#         )
+#         
+#         # Otherwise, get the predicted clean image as normal
+#         model_kwargs = {'noisy': noisy_tensor}
+# 
+#         pred_tensor = sample_fn(
+#             model,
+#             noisy_tensor.shape,
+#             clip_denoised=True,
+#             model_kwargs=model_kwargs,
+#         )
+#             
+#         if args.sample_to_use == "LAST":
+#             pred_tensor = pred_tensor[-1]
+#         elif args.sample_to_use == "SWEEP":
+#             pred_tensor = torch.mean(pred_tensor[-8:], dim=0)
+#         else:
+#             print("Not a valid 'sample_to_use' string.")
+#             exit(1)
+# 
+#         return pred_tensor
+# 
+#     evaluate_sar(sar_model, dist_util.dev(), training_args['in_channels'], training_args['large_size'])
+# 
+# 
+# def create_argparser():
+#     parser = argparse.ArgumentParser()
+#     add_dict_to_argparser(parser, default_args(test=True))
+#     return parser
+# 
+# 
+# def get_most_recent_log_folder(logs_dir):
+#     folders = [f for f in os.listdir(logs_dir) if os.path.isdir(os.path.join(logs_dir, f))]
+#     if len(folders) == 0:
+#         raise FileNotFoundError(f"No log folders found in {logs_dir}")
+#     date_folders = [(folder, datetime.strptime(folder.split('_')[-1], '%Y-%m-%d-%H-%M-%S')) for folder in folders]
+#     most_recent_folder = max(date_folders, key=lambda x: x[1])[0]
+#     return os.path.join(logs_dir, most_recent_folder)
+# 
+# 
+# def parse_args_from_log(log_file):
+#     args_dict = {}
+#     try:
+#         with open(log_file, 'r') as file:
+#             for line in file:
+#                 if line.startswith("Args: Namespace"):
+#                     args_str = line.strip().lstrip("Args: Namespace(").rstrip(")")
+#                     
+#                     # Regex to match key-value pairs, handling quoted values with commas
+#                     pattern = re.compile(r"(\w+)=('.*?'|\".*?\"|[^,]+)")
+#                     
+#                     matches = pattern.findall(args_str)
+#                     for key, value in matches:
+#                         # Remove the quotes if the value is a quoted string
+#                         if value.startswith(("'", '"')) and value.endswith(("'", '"')):
+#                             value = value[1:-1]
+#                         # Put the value into the correct format
+#                         try:
+#                             if value.lower() == 'true':
+#                                 value = True
+#                             elif value.lower() == 'false':
+#                                 value = False
+#                             elif value.isdigit():
+#                                 value = int(value)
+#                             else:
+#                                 try:
+#                                     value = float(value)
+#                                 except ValueError:
+#                                     pass  # keep as string if it's neither int nor float
+#                         except ValueError:
+#                             pass
+#                         args_dict[key] = value
+#                     break
+#     except Exception as e:
+#         raise Exception(f"An error occurred while parsing the log file {log_file}: {e}")
+#     return args_dict
+# 
+# 
+# if __name__ == "__main__":
+#     main()

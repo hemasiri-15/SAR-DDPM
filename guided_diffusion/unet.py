@@ -696,8 +696,10 @@ class UNetModel(nn.Module):
         hs = []
         emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
 
+        emb = emb.to(self.dtype)
+
         if look_num is not None:
-            emb = emb + self.look_emb(look_num)
+            emb = emb + self.look_emb(look_num).to(self.dtype)
 
         if struct_tensor is not None:
             emb = emb + self.struct_encoder(struct_tensor)
@@ -973,6 +975,7 @@ class EncoderUNetModel(nn.Module):
         :return: an [N x K] Tensor of outputs.
         """
         emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
+        emb = emb.to(self.dtype)
 
         results = []
         h = x.type(self.dtype)

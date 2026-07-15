@@ -96,7 +96,7 @@ def create_argparser():
         in_channels = 3,
         ema_rate = "",
         lr = 1e-4,
-        use_fp16 = True,
+        use_fp16 = False,
         fp16_scale_growth = 1e-3,
         num_channels = 192,
         num_heads = 4,
