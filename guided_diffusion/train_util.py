@@ -93,7 +93,6 @@ class TrainLoop:
         self.learn_sigma = learn_sigma
 
         self.step = 0
-        self.resume_step = 0
 
         world_size = dist.get_world_size() if dist.is_initialized() else 1
         self.global_batch = self.batch_size * world_size
@@ -183,17 +182,21 @@ class TrainLoop:
 
     def _load_and_sync_parameters(self):
         if self.resume_checkpoint:
-            # self.resume_step = parse_resume_step_from_filename(self.resume_checkpoint)
+            self.resume_step = parse_resume_step_from_filename(self.resume_checkpoint)
             if (not dist.is_initialized()) or dist.get_rank() == 0:
                 logger.log(f"Loading model from checkpoint: {self.resume_checkpoint}...")
                 state_dict = dist_util.load_state_dict(self.resume_checkpoint, map_location=dist_util.dev())
                 state_dict = self.modify_state_dict(state_dict) # modify size of state dict if necessary
+
                 missing, unexpected = self.model.load_state_dict(
                     state_dict,
                     strict=False,
                 )
 
                 print("\n========== CHECKPOINT AUDIT ==========")
+                missing, unexpected = self.model.load_state_dict(state_dict, strict=False)
+
+                print("\n================ CHECKPOINT REPORT ================")
                 print("Missing keys:", len(missing))
                 for k in missing:
                     print("  MISSING:", k)
@@ -203,8 +206,7 @@ class TrainLoop:
                     print("  UNEXPECTED:", k)
                 print("======================================\n")
 
-        dist_util.sync_params(self.model.parameters())
-
+                dist_util.sync_params(self.model.parameters())
 
     # Load parameters for a specific EMA rate from a checkpoint at the resume step
     def _load_ema_parameters(self, rate):

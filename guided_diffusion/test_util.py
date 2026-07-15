@@ -168,11 +168,10 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
                             print("sample:", sample.shape)
                             print("pred_tensor:", pred_tensor.shape)
 
-                            pred_tensor[:,:,:, num_rows-row:, num_cols-col:] = pred_tensor[:,:,:, num_rows-row:, num_cols-col:] + (1.0/N)*sample[:,:,:row ,:col ]
-                            pred_tensor[:,:,:,:num_rows-row ,:num_cols-col ] = pred_tensor[:,:,:,:num_rows-row ,:num_cols-col ] + (1.0/N)*sample[:,:, row:, col:]
-                            pred_tensor[:,:,:,:num_rows-row , num_cols-col:] = pred_tensor[:,:,:,:num_rows-row , num_cols-col:] + (1.0/N)*sample[:,:, row:,:col ]
-                            pred_tensor[:,:,:, num_rows-row:,:num_cols-col ] = pred_tensor[:,:,:, num_rows-row:,:num_cols-col ] + (1.0/N)*sample[:,:,:row , col:]
-
+                            pred_tensor[:, :, :, num_rows-row:, num_cols-col:] += (1.0/N) * sample[:, :, :, :row, :col]
+                            pred_tensor[:, :, :, :num_rows-row, :num_cols-col] += (1.0/N) * sample[:, :, :, row:, col:]
+                            pred_tensor[:, :, :, :num_rows-row, num_cols-col:] += (1.0/N) * sample[:, :, :, row:, :col]
+                            pred_tensor[:, :, :, num_rows-row:, :num_cols-col] += (1.0/N) * sample[:, :, :, :row, col:]
             else:
                 # Otherwise, get the predicted clean image as normal
                 model_kwargs = {'noisy': noisy_tensor}

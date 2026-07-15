@@ -707,8 +707,12 @@ class UNetModel(nn.Module):
         """
 
         hs = []
-        emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
+        emb = self.time_embed(
+            timestep_embedding(timesteps, self.model_channels)
+        )
         time_emb = emb.detach()
+
+        emb = emb.to(self.dtype)
 
         look_emb = None
         struct_emb = None
@@ -717,7 +721,7 @@ class UNetModel(nn.Module):
         wavelet_emb = None
 
         if USE_LOOK and look_num is not None:
-            look_emb = self.look_emb(look_num)
+            look_emb = self.look_emb(look_num).to(self.dtype)
             emb = emb + look_emb
 
         if USE_PHYSICS and struct_tensor is not None:
@@ -726,15 +730,15 @@ class UNetModel(nn.Module):
 
         if USE_MS and struct_tensors is not None:
             st1, st2, st3 = struct_tensors
-            ms_emb = self.ms_struct_encoder(st1, st2, st3)
+            ms_struct_emb = self.ms_struct_encoder(st1, st2, st3)
             emb = emb + ms_struct_emb
 
         if USE_SPECTRAL and spectral_tensor is not None:
-            spec_emb = self.tensor_spectral_encoder(spectral_tensor)
+            spectral_emb = self.tensor_spectral_encoder(spectral_tensor)
             emb = emb + spectral_emb
 
         if USE_WAVELET and wavelet_tensor is not None:
-            wave_emb = self.wavelet_encoder(wavelet_tensor)
+            wavelet_emb = self.wavelet_encoder(wavelet_tensor)
             emb = emb + wavelet_emb
 
         if (
@@ -1087,6 +1091,7 @@ class EncoderUNetModel(nn.Module):
         :return: an [N x K] Tensor of outputs.
         """
         emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
+        emb = emb.to(self.dtype)
 
         emb = emb.to(self.dtype)
 
