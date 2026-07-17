@@ -96,11 +96,40 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
 
 
         for batch_idx, data_tuple in enumerate(progress_bar):
-            clean_tensor, noisy_tensor, image_filename = data_tuple[:3]
+            (
+                clean_tensor,
+                noisy_tensor,
+                image_filename,
+                look_num,
+                struct_tensor_s1,
+                struct_tensor_s2,
+                struct_tensor_s3,
+                spectral_tensor,
+                wavelet_tensor,
+            ) = data_tuple
 
             clean_tensor = clean_tensor.to(device)
             noisy_tensor = noisy_tensor.to(device)
+            look_num = look_num.to(device)
 
+            struct_tensor_s1 = struct_tensor_s1.to(device)
+            struct_tensor_s2 = struct_tensor_s2.to(device)
+            struct_tensor_s3 = struct_tensor_s3.to(device)
+            spectral_tensor = spectral_tensor.to(device)
+            wavelet_tensor = wavelet_tensor.to(device)
+
+            model_kwargs = {
+                "noisy": noisy_tensor,
+                "look_num": look_num,
+                "struct_tensor": struct_tensor_s1,
+                "struct_tensors": (
+                    struct_tensor_s1,
+                    struct_tensor_s2,
+                    struct_tensor_s3,
+                ),
+                "spectral_tensor": spectral_tensor,
+                "wavelet_tensor": wavelet_tensor,
+            }
             # Reformat the images for metrics
             clean_image = ((clean_tensor + 1.0)* 127.5).clamp(0, 255.0)
             clean_image = torch.round(torch.mean(clean_image, dim=1)) / 255.0
@@ -135,13 +164,56 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
                 for row in range(0, num_rows, cycle_width):
                     for col in range(0, num_cols, cycle_width):
                         # Execute the cycle spin
-                        val_inputv[:,:,:row ,:col ] = noisy_tensor[:,:, num_rows-row:, num_cols-col:]
-                        val_inputv[:,:, row:, col:] = noisy_tensor[:,:,:num_rows-row ,:num_cols-col ]
-                        val_inputv[:,:, row:,:col ] = noisy_tensor[:,:,:num_rows-row , num_cols-col:]
-                        val_inputv[:,:,:row , col:] = noisy_tensor[:,:, num_rows-row:,:num_cols-col ]
+                        # All spatial conditioning tensors MUST receive the same shift
+                        # as the noisy input to preserve spatial alignment.
+                        val_inputv = torch.roll(
+                            noisy_tensor,
+                            shifts=(row, col),
+                            dims=(-2, -1),
+                        )
 
-                        model_kwargs = {'noisy': val_inputv}
+                        struct_s1_shifted = torch.roll(
+                            struct_tensor_s1,
+                            shifts=(row, col),
+                            dims=(-2, -1),
+                        )
 
+                        struct_s2_shifted = torch.roll(
+                            struct_tensor_s2,
+                            shifts=(row, col),
+                            dims=(-2, -1),
+                        )
+
+                        struct_s3_shifted = torch.roll(
+                            struct_tensor_s3,
+                            shifts=(row, col),
+                            dims=(-2, -1),
+                        )
+
+                        spectral_shifted = torch.roll(
+                            spectral_tensor,
+                            shifts=(row, col),
+                            dims=(-2, -1),
+                        )
+
+                        wavelet_shifted = torch.roll(
+                            wavelet_tensor,
+                            shifts=(row, col),
+                            dims=(-2, -1),
+                        )
+
+                        model_kwargs = {
+                            "noisy": val_inputv,
+                            "look_num": look_num,
+                            "struct_tensor": struct_s1_shifted,
+                            "struct_tensors": (
+                                struct_s1_shifted,
+                                struct_s2_shifted,
+                                struct_s3_shifted,
+                            ),
+                            "spectral_tensor": spectral_shifted,
+                            "wavelet_tensor": wavelet_shifted,
+                        }
                         # Get the predicted clean image
                         sample = sample_fn(
                                 model,
@@ -174,8 +246,6 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
                             pred_tensor[:, :, :, num_rows-row:, :num_cols-col] += (1.0/N) * sample[:, :, :, :row, col:]
             else:
                 # Otherwise, get the predicted clean image as normal
-                model_kwargs = {'noisy': noisy_tensor}
-
                 pred_tensor = sample_fn(
                                 model,
                                 noisy_tensor.shape,

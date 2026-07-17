@@ -99,6 +99,8 @@ class TrainLoop:
 
         self.sync_cuda = torch.cuda.is_available()
 
+        self.resume_checkpoint = resume_checkpoint
+        self.resume_step = 0
         self._load_and_sync_parameters()
         self.mp_trainer = MixedPrecisionTrainer(
             model=self.model,
@@ -350,6 +352,7 @@ class TrainLoop:
             model_kwargs = {
                 "noisy": noisy_tensor,
                 "look_num": look_num,
+                "struct_tensor": struct_tensor_s1,
                 "struct_tensors": (
                     struct_tensor_s1,
                     struct_tensor_s2,
@@ -481,8 +484,14 @@ class TrainLoop:
                 self.diffusion.original_alphas_cumprod,
             )
 
+            # Stabilize image-space auxiliary losses.
+            # DDPM x0 predictions can become very large at high-noise timesteps.
+            # Keep the raw x0_hat intact, but bound the version used by
+            # structure/edge/wavelet/SSIM losses to the normalized image range.
+            x0_hat_aux = x0_hat.clamp(-1.0, 1.0)
+
             struct_loss = self.struct_loss_fn(
-                x_hat=x0_hat,
+                x_hat=x0_hat_aux,
                 x_clean=micro.float().detach(),
             )
 
@@ -499,7 +508,7 @@ class TrainLoop:
             # from computing gradients through the ground-truth path.
             if self.lambda_edge > 0.0:
                 edge_loss = self.edge_loss_fn(
-                    x_pred=x0_hat,               # in autograd graph: x0_hat→eps_hat→UNet
+                    x_pred=x0_hat_aux,               # in autograd graph: x0_hat→eps_hat→UNet
                     x_gt=micro.float().detach(), # GT detached: only x0_hat gets grads
                 )
                 loss = loss + self.lambda_edge * edge_loss
@@ -509,20 +518,20 @@ class TrainLoop:
             # ── A34: Wavelet Consistency Loss ─────────────────────────
             if self.lambda_wavelet > 0.0:
                 wavelet_loss = self.wavelet_loss_fn(
-                    x_pred=x0_hat,
+                    x_pred=x0_hat_aux,
                     x_gt=micro.float().detach(),
-            )
+                )
 
-            loss = loss + self.lambda_wavelet * wavelet_loss
+                loss = loss + self.lambda_wavelet * wavelet_loss
 
-            logger.logkv_mean(
-                "wavelet_loss",
-                wavelet_loss.item(),
-            )
+                logger.logkv_mean(
+                    "wavelet_loss",
+                    wavelet_loss.item(),
+                )
             # ── A36: SSIM Loss ────────────────────────────────────────
             if self.lambda_ssim > 0.0:
                 ssim_loss = self.ssim_loss_fn(
-                    x_pred=x0_hat,
+                    x_pred=x0_hat_aux,
                     x_gt=micro.float().detach(),
                 )
 
