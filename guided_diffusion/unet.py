@@ -615,6 +615,17 @@ class UNetModel(nn.Module):
                 use_scale_shift_norm=use_scale_shift_norm,
             ),
         )
+
+        print("\n===== OUT PROJ CHECK =====")
+
+        attn = self.middle_block[2].attn
+
+        print("weight mean:", attn.out_proj.weight.abs().mean().item())
+        print("weight max :", attn.out_proj.weight.abs().max().item())
+        print("bias mean  :", attn.out_proj.bias.abs().mean().item())
+
+        print("==========================\n")
+
         self._feature_size += ch
 
         self.output_blocks = nn.ModuleList([])
@@ -725,7 +736,7 @@ class UNetModel(nn.Module):
             emb = emb + look_emb
 
         if USE_PHYSICS and struct_tensor is not None:
-            struct_emb = self.struct_encoder(struct_tensor)
+            struct_emb = self.struct_encoder(struct_tensor).to(self.dtype)
             emb = emb + struct_emb
 
         if USE_MS and struct_tensors is not None:
@@ -740,6 +751,26 @@ class UNetModel(nn.Module):
         if USE_WAVELET and wavelet_tensor is not None:
             wavelet_emb = self.wavelet_encoder(wavelet_tensor)
             emb = emb + wavelet_emb
+
+        print("\n===== DTYPE AUDIT =====")
+        print("emb         :", emb.dtype)
+
+        if look_emb is not None:
+            print("look_emb    :", look_emb.dtype)
+
+        if struct_emb is not None:
+            print("struct_emb  :", struct_emb.dtype)
+
+        if ms_struct_emb is not None:
+            print("ms_struct   :", ms_struct_emb.dtype)
+
+        if spectral_emb is not None:
+            print("spectral    :", spectral_emb.dtype)
+
+        if wavelet_emb is not None:
+            print("wavelet     :", wavelet_emb.dtype)
+
+        print("=======================\n")
 
         if (
             look_num is not None
@@ -829,6 +860,19 @@ class UNetModel(nn.Module):
                 struct_tensor_at_bottleneck
             )
 
+            if physics_attention_bias.requires_grad:
+                physics_attention_bias.retain_grad()
+                self._debug_physics_bias = physics_attention_bias
+
+            print(
+                "UNET physics bias requires_grad:",
+                physics_attention_bias.requires_grad
+            )
+            print(
+                "UNET physics bias grad_fn:",
+                physics_attention_bias.grad_fn
+            )
+
             if (
                 physics_attention_bias is not None
                 and not hasattr(self, "_physics_stats_printed")
@@ -837,6 +881,7 @@ class UNetModel(nn.Module):
 
                 print("\n===== Physics Bias =====")
                 print("shape :", physics_attention_bias.shape)
+                print("dtype :", physics_attention_bias.dtype)
                 print("min   :", physics_attention_bias.min().item())
                 print("max   :", physics_attention_bias.max().item())
                 print("mean  :", physics_attention_bias.mean().item())

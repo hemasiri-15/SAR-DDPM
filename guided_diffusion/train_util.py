@@ -112,6 +112,19 @@ class TrainLoop:
             self.mp_trainer.master_params, lr=self.lr, weight_decay=self.weight_decay
         )
 
+        print("\n===== OPTIMIZER CHECK =====")
+
+        found = False
+        for group in self.opt.param_groups:
+            for p in group["params"]:
+                for name, q in self.model.named_parameters():
+                    if p is q and "alpha_orientation" in name:
+                        print("FOUND:", name)
+                        found = True
+
+        print("Found alpha_orientation:", found)
+        print("===========================\n")
+
         if torch.cuda.is_available():
             self._load_optimizer_state()
             # Model was resumed, either due to a restart or a checkpoint
@@ -435,11 +448,65 @@ class TrainLoop:
 
     def run_step(self, batch, cond):
         loss = self.forward_backward(batch, cond)
+
+        print("\n========== Physics Gradients ==========")
+
+        for name, param in self.model.named_parameters():
+            if "physics" in name.lower():
+                if param.grad is None:
+                    print(name, "-> NO GRAD")
+                else:
+                    print(name, "->", param.grad.abs().mean().item())
+
+        print("=======================================\n")
+
+        fusion = self.model.physics_attention_bias_builder.physics_bias_fusion
+
+        print("\n===== PARAMETER CHECK =====")
+        print(
+            "requires_grad:",
+            fusion.alpha_orientation.requires_grad
+        )
+        print(
+            "is_leaf:",
+            fusion.alpha_orientation.is_leaf
+        )
+        print(
+            "grad_fn:",
+            fusion.alpha_orientation.grad_fn
+        )
+
+        found = False
+        for name, p in self.model.named_parameters():
+            if p is fusion.alpha_orientation:
+                print("FOUND IN MODEL:", name)
+                found = True
+
+        print("Found:", found)
+        print("===========================\n")
+
+        print(
+            "PHYSICS GATE AFTER STEP:",
+            "alpha_orientation =", fusion.alpha_orientation.item(),
+            "grad =", None if fusion.alpha_orientation.grad is None
+            else fusion.alpha_orientation.grad.item(),
+        )
+
         took_step = self.mp_trainer.optimize(self.opt)
+
+        print(
+            "PHYSICS GATE AFTER OPTIMIZER:",
+            "alpha_orientation =", fusion.alpha_orientation.item(),
+        )
+
+        import sys
+        print("\n===== FIRST ITERATION COMPLETE =====")
+        sys.exit(0)
+
         if took_step:
             self._update_ema()
-        self._anneal_lr()
-        self.log_step()
+            self._anneal_lr()
+            self.log_step()
         return loss
 
 
@@ -471,12 +538,23 @@ class TrainLoop:
                 with self.ddp_model.no_sync():
                     losses = compute_losses()
 
+
             if isinstance(self.schedule_sampler, LossAwareSampler):
                 self.schedule_sampler.update_with_local_losses(
                     t, losses["loss"].detach()
                 )
 
             loss = (losses["loss"] * weights).mean()
+
+            print("\n========== LOSS DEBUG ==========")
+            print("Total loss:", loss.item())
+
+            for k, v in losses.items():
+                if torch.is_tensor(v):
+                    print(f"{k}: {v.mean().item()}")
+
+            print("================================")
+
             x0_hat = reconstruct_x0(
                 self.eps_hook.last_x_t,
                 self.eps_hook.last_t,
@@ -549,6 +627,63 @@ class TrainLoop:
                 self.diffusion, t, {k: v * weights for k, v in losses.items()}
             )
             self.mp_trainer.backward(loss)
+
+            attn = self.model.middle_block[2].attn
+
+            if hasattr(attn, "last_attn_out"):
+                print("\n===== ATTN_OUT GRAD =====")
+                print("mean:", attn.last_attn_out.grad.abs().mean().item())
+                print("max :", attn.last_attn_out.grad.abs().max().item())
+                print("=========================\n")
+
+            block = self.model.middle_block[2]
+
+            if hasattr(block, "last_out"):
+                print("\n===== BLOCK OUT GRAD =====")
+                print("mean:", block.last_out.grad.abs().mean().item())
+                print("max :", block.last_out.grad.abs().max().item())
+                print("==========================\n")
+
+
+            model = self.ddp_model.module if self.use_ddp else self.model
+
+            print("\n===== BIAS GRAD =====")
+
+            if hasattr(model, "_debug_physics_bias"):
+                print(model._debug_physics_bias.grad)
+            else:
+                print("No debug physics bias found.")
+
+            print("=====================\n")
+
+            attn = (
+                self.model
+                .middle_block[2]      # adjust index if your PhysicsTransformerBlock is elsewhere
+                .attn
+            )
+
+            if hasattr(attn, "last_bias"):
+                print("\n===== BIAS GRAD =====")
+                print(attn.last_bias.grad)
+                print("=====================\n")
+
+            fusion = self.model.physics_attention_bias_builder.physics_bias_fusion
+
+            print("\n===== RAW MODEL GRAD =====")
+            print("alpha =", fusion.alpha_orientation.item())
+            print("grad  =", fusion.alpha_orientation.grad)
+            print("==========================")
+
+            print("\n========== Physics Gradients ==========")
+
+            for name, param in self.model.named_parameters():
+                if "physics" in name.lower():
+                    if param.grad is None:
+                        print(name, "-> NO GRAD")
+                    else:
+                        print(name, "->", param.grad.abs().mean().item())
+
+            print("=======================================\n")
 
         return net_loss / self.batch_size
 

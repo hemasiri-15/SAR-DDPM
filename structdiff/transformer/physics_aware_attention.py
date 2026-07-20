@@ -79,6 +79,8 @@ from typing import Optional, Tuple, Union
 import torch
 import torch.nn as nn
 
+import math
+import torch.nn.functional as F
 
 class PhysicsAwareAttention(nn.Module):
     """Multi-head self-attention with an optional additive physics bias.
@@ -140,12 +142,19 @@ class PhysicsAwareAttention(nn.Module):
         self.num_heads = num_heads
         self.dropout = dropout
 
-        self.attn = nn.MultiheadAttention(
-            embed_dim=embed_dim,
-            num_heads=num_heads,
-            dropout=dropout,
-            batch_first=True,
-        )
+        self.head_dim = embed_dim // num_heads
+
+        assert (
+            embed_dim % num_heads == 0
+        ), "embed_dim must be divisible by num_heads"
+
+        self.q_proj = nn.Linear(embed_dim, embed_dim)
+        self.k_proj = nn.Linear(embed_dim, embed_dim)
+        self.v_proj = nn.Linear(embed_dim, embed_dim)
+
+        self.out_proj = nn.Linear(embed_dim, embed_dim)
+
+        self.dropout_layer = nn.Dropout(dropout)
 
     def _expand_bias_to_attn_mask(
         self, physics_attention_bias: torch.Tensor, batch_size: int, seq_len: int
@@ -252,20 +261,96 @@ class PhysicsAwareAttention(nn.Module):
                 f"({self.embed_dim})."
             )
 
-        attn_mask: Optional[torch.Tensor] = None
-        if physics_attention_bias is not None:
-            attn_mask = self._expand_bias_to_attn_mask(
-                physics_attention_bias, batch_size, seq_len
-            )
+        B, N, D = x.shape
 
-        attn_out, attn_weights = self.attn(
-            x,
-            x,
-            x,
-            attn_mask=attn_mask,
-            need_weights=return_attention,
-            average_attn_weights=False,
+        H = self.num_heads
+        Hd = self.head_dim
+
+        # ----------------------------
+        # Q K V
+        # ----------------------------
+
+        q = self.q_proj(x)
+        k = self.k_proj(x)
+        v = self.v_proj(x)
+
+        q = q.view(B, N, H, Hd).transpose(1, 2)
+        k = k.view(B, N, H, Hd).transpose(1, 2)
+        v = v.view(B, N, H, Hd).transpose(1, 2)
+
+        # ----------------------------
+        # logits
+        # ----------------------------
+
+        scores = torch.matmul(
+            q.float(),
+            k.transpose(-2, -1).float()
         )
+
+        scores /= math.sqrt(Hd)
+
+        print("\n===== SCORE AUDIT =====")
+        print("scores mean :", scores.mean().item())
+        print("scores std  :", scores.std().item())
+        print("scores max  :", scores.abs().max().item())
+
+        if physics_attention_bias is not None:
+            print("bias mean   :", physics_attention_bias.mean().item())
+            print("bias std    :", physics_attention_bias.std().item())
+            print("bias max    :", physics_attention_bias.abs().max().item())
+
+        print("========================")
+
+        if physics_attention_bias is not None and physics_attention_bias.requires_grad:
+            physics_attention_bias.retain_grad()
+            self.last_bias = physics_attention_bias
+
+        if physics_attention_bias is not None:
+
+            scores = scores + physics_attention_bias.unsqueeze(1).float()
+
+        weights = F.softmax(scores, dim=-1)
+
+        if physics_attention_bias is not None:
+            with torch.no_grad():
+                scores_no_bias = (
+                    torch.matmul(
+                        q.float(),
+                        k.transpose(-2, -1).float()
+                    ) / math.sqrt(Hd)
+                )
+
+                weights_no_bias = F.softmax(scores_no_bias, dim=-1)
+
+                diff = (weights - weights_no_bias).abs().mean()
+
+                print("\n===== ATTENTION EFFECT =====")
+                print("mean |Δweights| =", diff.item())
+                print("============================")
+
+        weights = self.dropout_layer(weights)
+
+        weights = weights.to(v.dtype)
+
+        # ----------------------------
+        # attention output
+        # ----------------------------
+
+        attn_out = torch.matmul(weights, v)
+
+        attn_out = (
+            attn_out.transpose(1, 2)
+            .contiguous()
+            .view(B, N, D)
+        )
+
+        attn_out = self.out_proj(attn_out)
+
+        if attn_out.requires_grad:
+            attn_out.retain_grad()
+            self.last_attn_out = attn_out
+
+        attn_weights = weights if return_attention else None
 
         if return_attention:
             return attn_out, attn_weights

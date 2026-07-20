@@ -132,7 +132,7 @@ class PhysicsBiasFusion(nn.Module):
 
     def __init__(self) -> None:
         super().__init__()
-        self.alpha_orientation = nn.Parameter(torch.zeros(()))
+        self.alpha_orientation = nn.Parameter(torch.tensor(1.0))
         self.alpha_wavelet = nn.Parameter(torch.zeros(()))
         self.alpha_spectral = nn.Parameter(torch.zeros(()))
         self.alpha_confidence = nn.Parameter(torch.zeros(()))
@@ -171,7 +171,16 @@ class PhysicsBiasFusion(nn.Module):
             confidence_relation,
         )
 
-        physics_attention_bias = self.alpha_orientation * orientation_relation
+        physics_attention_bias = (
+            self.alpha_orientation.to(orientation_relation.dtype)
+            * orientation_relation
+        )
+
+        print("\n===== GRAD MODE =====")
+        print("torch.is_grad_enabled():", torch.is_grad_enabled())
+        print("physics_attention_bias.requires_grad:", physics_attention_bias.requires_grad)
+        print("physics_attention_bias.grad_fn:", physics_attention_bias.grad_fn)
+        print("=====================\n")
 
         if wavelet_relation is not None:
             physics_attention_bias = (
@@ -187,6 +196,15 @@ class PhysicsBiasFusion(nn.Module):
                 physics_attention_bias
                 + self.alpha_confidence * confidence_relation
             )
+
+        print(
+            "physics_attention_bias.requires_grad:",
+            physics_attention_bias.requires_grad
+        )
+        print(
+            "physics_attention_bias.grad_fn:",
+            physics_attention_bias.grad_fn
+        )
 
         return physics_attention_bias
 

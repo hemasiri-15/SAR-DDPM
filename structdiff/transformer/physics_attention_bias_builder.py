@@ -221,6 +221,30 @@ class PhysicsAttentionBiasBuilder(nn.Module):
             confidence_relation=confidence_relation,
         )
 
+        print("\n===== Builder =====")
+
+        print(
+             "orientation_relation:",
+             f"mean={orientation_relation.mean().item():.6f}",
+             f"std={orientation_relation.std().item():.6f}",
+             f"min={orientation_relation.min().item():.6f}",
+             f"max={orientation_relation.max().item():.6f}",
+        )
+
+        print(
+             "physics_bias:",
+             f"mean={physics_attention_bias.mean().item():.6f}",
+             f"std={physics_attention_bias.std().item():.6f}",
+             f"min={physics_attention_bias.min().item():.6f}",
+             f"max={physics_attention_bias.max().item():.6f}",
+        )
+
+        print("===================")
+
+        print("orientation_relation:", orientation_relation.dtype)
+        print("physics_bias:", physics_attention_bias.dtype)
+        print("===================\n")
+
         return physics_attention_bias
 
     @staticmethod

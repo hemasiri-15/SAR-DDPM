@@ -49,8 +49,16 @@ def main():
 
     logger.log("Creating data loaders...")
     train_dataset = WaveletDataset(args.train_dir, train=True, num_channels=args.in_channels, crop_size=(args.large_size, args.large_size), seed=args.seed)
+
+    from torch.utils.data import Subset
+
+    train_dataset = Subset(train_dataset, [0])
+
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=1, drop_last=True)
     val_dataset = WaveletDataset(args.val_dir, train=False, num_channels=args.in_channels, crop_size=(args.large_size, args.large_size), length=((args.val_samples//args.batch_size)*args.batch_size), seed=args.seed)
+
+    val_dataset = Subset(val_dataset, [0])
+
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=1)
 
     logger.log("Training...")

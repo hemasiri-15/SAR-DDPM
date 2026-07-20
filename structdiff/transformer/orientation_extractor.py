@@ -194,6 +194,12 @@ class OrientationExtractor(nn.Module):
         lambda2 = half_trace - half_discriminant
         anisotropy = (lambda1 - lambda2) / (lambda1 + lambda2 + self.eps)
 
+        print("\n===== Orientation Extractor =====")
+        print("orientation :", orientation.dtype)
+        print("coherence   :", coherence.dtype)
+        print("structure   :", struct_tensor.dtype)
+        print("===============================\n")
+
         return {
             "orientation": orientation,
             "coherence": coherence,

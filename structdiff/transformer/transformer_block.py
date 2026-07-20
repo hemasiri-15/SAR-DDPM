@@ -210,8 +210,8 @@ class _BaseTransformerBlock(nn.Module):
         )
 
         # --- LayerScale gates (Touvron et al., CaiT) -------------------------
-        self.gamma1 = nn.Parameter(1e-5 * torch.ones(channels))
-        self.gamma2 = nn.Parameter(1e-5 * torch.ones(channels))
+        self.gamma1 = nn.Parameter(torch.ones(channels))
+        self.gamma2 = nn.Parameter(torch.ones(channels))
 
         # --- Stochastic depth -------------------------------------------------
         self.drop_path1 = DropPath(drop_path)
@@ -271,7 +271,7 @@ class _BaseTransformerBlock(nn.Module):
         nn.init.zeros_(final_linear.weight)
         nn.init.zeros_(final_linear.bias)
 
-        self._zero_init_attention_output()
+        #self._zero_init_attention_output()
 
     def _forward_impl(
         self,
@@ -315,6 +315,10 @@ class _BaseTransformerBlock(nn.Module):
 
         # [B, H*W, C] -> [B, C, H*W] -> [B, C, H, W]
         out = seq.transpose(1, 2).reshape(batch_size, channels, height, width)
+
+        if out.requires_grad:
+            out.retain_grad()
+            self.last_out = out
 
         if return_attention:
             return out, attn_weights
