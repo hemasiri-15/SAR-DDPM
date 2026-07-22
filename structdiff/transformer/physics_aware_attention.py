@@ -278,6 +278,16 @@ class PhysicsAwareAttention(nn.Module):
         k = k.view(B, N, H, Hd).transpose(1, 2)
         v = v.view(B, N, H, Hd).transpose(1, 2)
 
+
+        print("\n===== QKV AUDIT =====")
+        print("Q std :", q.std().item())
+        print("K std :", k.std().item())
+        print("V std :", v.std().item())
+        print("Q mean:", q.mean().item())
+        print("K mean:", k.mean().item())
+        print("V mean:", v.mean().item())
+        print("=====================")
+
         # ----------------------------
         # logits
         # ----------------------------
@@ -328,6 +338,7 @@ class PhysicsAwareAttention(nn.Module):
                 print("mean |Δweights| =", diff.item())
                 print("============================")
 
+
         weights = self.dropout_layer(weights)
 
         weights = weights.to(v.dtype)
@@ -338,6 +349,20 @@ class PhysicsAwareAttention(nn.Module):
 
         attn_out = torch.matmul(weights, v)
 
+        if physics_attention_bias is not None:
+            with torch.no_grad():
+                attn_no_bias = torch.matmul(weights_no_bias.to(v.dtype), v)
+
+                print("\n===== ATTENTION EFFECT =====")
+                print("mean |Δweights| :", (weights - weights_no_bias).abs().mean().item())
+                print("mean |Δattn_out|:", (attn_out - attn_no_bias).abs().mean().item())
+                print("============================")
+
+        print("\n===== ATTN BEFORE PROJ =====")
+        print("mean:", attn_out.mean().item())
+        print("std :", attn_out.std().item())
+        print("============================")
+
         attn_out = (
             attn_out.transpose(1, 2)
             .contiguous()
@@ -345,6 +370,16 @@ class PhysicsAwareAttention(nn.Module):
         )
 
         attn_out = self.out_proj(attn_out)
+
+        print("\n===== ATTN AFTER PROJ =====")
+        print("mean:", attn_out.mean().item())
+        print("std :", attn_out.std().item())
+        print("===========================")
+
+        print("\n===== OUT PROJ WEIGHTS =====")
+        print("weight std:", self.out_proj.weight.std().item())
+        print("weight max:", self.out_proj.weight.abs().max().item())
+        print("============================")
 
         if attn_out.requires_grad:
             attn_out.retain_grad()

@@ -112,6 +112,32 @@ class TrainLoop:
             self.mp_trainer.master_params, lr=self.lr, weight_decay=self.weight_decay
         )
 
+        print("\n===== PARAMETER ID CHECK =====")
+
+        target = self.model.middle_block[2].attn.q_proj.weight
+
+        print("Model q_proj id:", id(target))
+
+        found = False
+
+        for i, group in enumerate(self.opt.param_groups):
+            for p in group["params"]:
+                if id(p) == id(target):
+                    print(f"FOUND in optimizer group {i}")
+                    found = True
+
+        print("Found:", found)
+        print("==============================\n")
+
+        print("Master params containing q_proj?")
+
+        for p in self.mp_trainer.master_params:
+            if p.shape == target.shape:
+                if torch.equal(p.detach().float(), target.detach().float()):
+                    print("Possible match")
+                    print("master id:", id(p))
+                    print("model  id:", id(target))
+
         print("\n===== OPTIMIZER CHECK =====")
 
         found = False
@@ -516,6 +542,13 @@ class TrainLoop:
         net_loss = 0.0
 
         for i in range(0, batch.shape[0], self.microbatch):
+
+            if self.step == 0 and i == 0:
+                print("\n===== MIDDLE BLOCK =====")
+                for idx, m in enumerate(self.model.middle_block):
+                    print(idx, type(m).__name__)
+                print("========================\n")
+
             micro = batch[i : i + self.microbatch].to(dist_util.dev())
             micro_cond = {
                 k : v[i : i + self.microbatch].to(dist_util.dev()) if isinstance(v, torch.Tensor) else v
@@ -626,9 +659,41 @@ class TrainLoop:
             log_loss_dict(
                 self.diffusion, t, {k: v * weights for k, v in losses.items()}
             )
+
+            print("\n===== BACKWARD LOSS =====")
+            print("loss:", loss)
+            print("requires_grad:", loss.requires_grad)
+            print("grad_fn:", loss.grad_fn)
+            print("=========================")
+
             self.mp_trainer.backward(loss)
 
-<<<<<<< HEAD
+
+            print("\n========== TRANSFORMER PARAM GRADS ==========")
+
+            block = self.model.middle_block[2]
+
+            params = [
+                ("q_proj", block.attn.q_proj.weight),
+                ("k_proj", block.attn.k_proj.weight),
+                ("v_proj", block.attn.v_proj.weight),
+                ("out_proj", block.attn.out_proj.weight),
+                ("gamma1", block.gamma1),
+                ("gamma2", block.gamma2),
+            ]
+
+            for name, p in params:
+                if p.grad is None:
+                    print(f"{name:10s}: NO GRAD")
+                else:
+                    print(
+                        f"{name:10s}: "
+                        f"mean={p.grad.abs().mean().item():.8e} "
+                        f"max={p.grad.abs().max().item():.8e}"
+                    )
+
+            print("=============================================\n")
+
             attn = self.model.middle_block[2].attn
 
             if hasattr(attn, "last_attn_out"):
@@ -685,7 +750,7 @@ class TrainLoop:
                         print(name, "->", param.grad.abs().mean().item())
 
             print("=======================================\n")
-=======
+
             # =====================================================
             # GRADIENT BISECTION DEBUG
             # =====================================================
@@ -750,7 +815,6 @@ class TrainLoop:
                 pass
 
             print("========================================\n")
->>>>>>> 71faf38 (Add gradient debugging for physics-aware attention)
 
         return net_loss / self.batch_size
 

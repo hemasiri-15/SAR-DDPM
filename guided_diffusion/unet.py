@@ -746,12 +746,8 @@ class UNetModel(nn.Module):
             look_emb = self.look_emb(look_num).to(self.dtype)
 
         if USE_PHYSICS and struct_tensor is not None:
-<<<<<<< HEAD
             struct_emb = self.struct_encoder(struct_tensor).to(self.dtype)
             emb = emb + struct_emb
-=======
-            struct_emb = self.struct_encoder(struct_tensor)
->>>>>>> 71faf38 (Add gradient debugging for physics-aware attention)
 
         if USE_MS and struct_tensors is not None:
             st1, st2, st3 = struct_tensors

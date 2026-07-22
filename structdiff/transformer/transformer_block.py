@@ -306,7 +306,19 @@ class _BaseTransformerBlock(nn.Module):
         # --- Self-attention sub-layer (pre-norm + LayerScale + DropPath + residual) ---
         normed = self.norm1(seq)
         attn_out, attn_weights = self._attend(normed, return_attention, **attn_kwargs)
+
+        print("\n===== GAMMA CHECK =====")
+        print("gamma1:", self.gamma1.mean().item())
+        print("attn_out mean:", attn_out.mean().item())
+        print("attn_out std :", attn_out.std().item())
+        print("=======================\n")
+
         seq = seq + self.drop_path1(self.gamma1 * attn_out)
+
+        print("\n===== RESIDUAL CHECK =====")
+        print("seq mean:", seq.mean().item())
+        print("seq std :", seq.std().item())
+        print("==========================\n")
 
         # --- Feed-forward sub-layer (pre-norm + LayerScale + DropPath + residual) ---
         normed = self.norm2(seq)

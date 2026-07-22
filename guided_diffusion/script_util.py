@@ -63,7 +63,7 @@ def model_and_diffusion_defaults():
         channel_mult="",
         dropout=0.0,
         class_cond=False,
-        use_checkpoint=True,
+        use_checkpoint=False,
         use_scale_shift_norm=True,
         resblock_updown=False,
         use_fp16=False,
