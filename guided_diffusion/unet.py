@@ -627,8 +627,6 @@ class UNetModel(nn.Module):
             ),
         )
 
-        print("\n===== OUT PROJ CHECK =====")
-
         attn = self.middle_block[2].attn
 
         print("weight mean:", attn.out_proj.weight.abs().mean().item())

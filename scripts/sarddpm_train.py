@@ -49,9 +49,6 @@ def main():
 
     logger.log("Creating data loaders...")
 
-    print("args.train_dir =", args.train_dir)
-    print("args.val_dir   =", args.val_dir)
-
     train_dataset = WaveletDataset(args.train_dir, train=True, num_channels=args.in_channels, crop_size=(args.large_size, args.large_size), seed=args.seed)
 
     from torch.utils.data import Subset

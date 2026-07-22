@@ -304,7 +304,6 @@ class TrainLoop:
             not self.lr_anneal_steps
             or self.step + self.resume_step < self.lr_anneal_steps
         ):
-            print("DEBUG 1: before next(train_generator)", flush=True)
 
             (
                 clean_tensor,
@@ -312,8 +311,6 @@ class TrainLoop:
                 image_filename,
                 conditions,
             ) = next(train_generator)
-       
-            print("DEBUG 2: batch loaded", flush=True)
 
             look_num = conditions["look_num"]
 
@@ -338,11 +335,7 @@ class TrainLoop:
                 **conditions,
             }
 
-            print("DEBUG 3: before run_step", flush=True)
-
             net_loss += self.run_step(clean_tensor, model_kwargs)
-
-            print("DEBUG 4: after run_step", flush=True)
 
             self.step += 1
 
@@ -429,11 +422,6 @@ class TrainLoop:
 
             loss = (losses["loss"] * weights).mean()
 
-            print("Grad enabled:", torch.is_grad_enabled())
-
-            print("\n========== LOSS DEBUG ==========")
-            print("Total loss:", loss.item())
-
             x0_hat = reconstruct_x0(
                 self.eps_hook.last_x_t,
                 self.eps_hook.last_t,
@@ -498,8 +486,6 @@ class TrainLoop:
             for p in self.model.parameters():
                 if p.grad is not None:
                     total_grad += p.grad.abs().sum().item()
-
-            print("TOTAL GRAD:", total_grad)
 
         return net_loss / self.batch_size
 
