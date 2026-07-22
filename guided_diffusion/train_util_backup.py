@@ -67,7 +67,7 @@ class TrainLoop:
         lr_anneal_steps=0,
         use_ddim=False,
         learn_sigma=True,
-    ):
+    ): #__init__
         self.model = model
         self.diffusion = diffusion
         self.train_loader = train_loader
@@ -112,6 +112,45 @@ class TrainLoop:
             self.mp_trainer.master_params, lr=self.lr, weight_decay=self.weight_decay
         )
 
+        print("\n===== PARAMETER ID CHECK =====")
+
+        target = self.model.middle_block[2].attn.q_proj.weight
+
+        print("Model q_proj id:", id(target))
+
+        found = False
+
+        for i, group in enumerate(self.opt.param_groups):
+            for p in group["params"]:
+                if id(p) == id(target):
+                    print(f"FOUND in optimizer group {i}")
+                    found = True
+
+        print("Found:", found)
+        print("==============================\n")
+
+        print("Master params containing q_proj?")
+
+        for p in self.mp_trainer.master_params:
+            if p.shape == target.shape:
+                if torch.equal(p.detach().float(), target.detach().float()):
+                    print("Possible match")
+                    print("master id:", id(p))
+                    print("model  id:", id(target))
+
+        print("\n===== OPTIMIZER CHECK =====")
+
+        found = False
+        for group in self.opt.param_groups:
+            for p in group["params"]:
+                for name, q in self.model.named_parameters():
+                    if p is q and "alpha_orientation" in name:
+                        print("FOUND:", name)
+                        found = True
+
+        print("Found alpha_orientation:", found)
+        print("===========================\n")
+
         if torch.cuda.is_available():
             self._load_optimizer_state()
             # Model was resumed, either due to a restart or a checkpoint
@@ -126,12 +165,13 @@ class TrainLoop:
                 for _ in range(len(self.ema_rate))
             ]
 
-        # Use DDP only if distributed training has actually been initialized.
+       # Use DDP only if distributed training has actually been initialized.
         if (
             torch.cuda.is_available()
             and dist.is_available()
             and dist.is_initialized()
         ):
+            print("Using DistributedDataParallel")
             self.use_ddp = True
             self.ddp_model = DDP(
                 self.model,
@@ -142,8 +182,9 @@ class TrainLoop:
                 find_unused_parameters=True,
             )
         else:
+            print("Using single-GPU training")
             self.use_ddp = False
-            self.ddp_model = self.model
+            self.ddp_model = self.model 
 
         self.lambda_struct = 0.1
 
@@ -155,7 +196,7 @@ class TrainLoop:
         # lambda_edge is set below lambda_struct=0.1 because Sobel gradient
         # magnitudes are naturally larger than structure tensor components,
         # so a smaller weight prevents edge loss from dominating.
-        self.lambda_edge = DEFAULT_LAMBDA_EDGE  # 0.05; set 0.0 to disable
+        self.lambda_edge = DEFAULT_LAMBDA_EDGE   # 0.05; set 0.0 to disable
         self.edge_loss_fn = EdgeAwareLoss(
             alpha=0.6,   # weight on L1 gradient-magnitude term
             beta=0.4,    # weight on directional (Gx / Gy) L1 term
@@ -163,7 +204,10 @@ class TrainLoop:
 
         # A34 — Wavelet Consistency Loss
         self.lambda_wavelet = DEFAULT_LAMBDA_WAVELET
-        self.wavelet_loss_fn = WaveletConsistencyLoss().to(dist_util.dev())
+
+        self.wavelet_loss_fn = WaveletConsistencyLoss().to(
+            dist_util.dev()
+        )
 
         self.eps_hook = EpsInterceptHook(
             self.ddp_model,
@@ -172,7 +216,10 @@ class TrainLoop:
 
         # A36 — SSIM Loss
         self.lambda_ssim = DEFAULT_LAMBDA_SSIM
-        self.ssim_loss_fn = SSIMLoss().to(dist_util.dev())
+
+        self.ssim_loss_fn = SSIMLoss().to(
+            dist_util.dev()
+        )
 
     def _load_and_sync_parameters(self):
         if self.resume_checkpoint:
@@ -180,16 +227,25 @@ class TrainLoop:
             if (not dist.is_initialized()) or dist.get_rank() == 0:
                 logger.log(f"Loading model from checkpoint: {self.resume_checkpoint}...")
                 state_dict = dist_util.load_state_dict(self.resume_checkpoint, map_location=dist_util.dev())
-                state_dict = self.modify_state_dict(state_dict)  # modify size of state dict if necessary
+                state_dict = self.modify_state_dict(state_dict) # modify size of state dict if necessary
 
                 missing, unexpected = self.model.load_state_dict(
                     state_dict,
                     strict=False,
                 )
-                if missing:
-                    logger.log(f"Checkpoint load: {len(missing)} missing keys")
-                if unexpected:
-                    logger.log(f"Checkpoint load: {len(unexpected)} unexpected keys")
+
+                print("\n========== CHECKPOINT AUDIT ==========")
+                missing, unexpected = self.model.load_state_dict(state_dict, strict=False)
+
+                print("\n================ CHECKPOINT REPORT ================")
+                print("Missing keys:", len(missing))
+                for k in missing:
+                    print("  MISSING:", k)
+
+                print("\nUnexpected keys:", len(unexpected))
+                for k in unexpected:
+                    print("  UNEXPECTED:", k)
+                print("======================================\n")
 
                 dist_util.sync_params(self.model.parameters())
 
@@ -204,11 +260,12 @@ class TrainLoop:
                 state_dict = dist_util.load_state_dict(
                     ema_checkpoint, map_location=dist_util.dev()
                 )
-                state_dict = self.modify_state_dict(state_dict)  # modify size of state dict if necessary
+                state_dict = self.modify_state_dict(state_dict) # modify size of state dict if necessary
                 ema_params = self.mp_trainer.state_dict_to_master_params(state_dict)
 
         dist_util.sync_params(ema_params)
         return ema_params
+
 
     def _load_optimizer_state(self):
         opt_checkpoint = bf.join(
@@ -221,23 +278,34 @@ class TrainLoop:
             )
             self.opt.load_state_dict(state_dict)
 
+
     # Define a function to modify the state dictionary
     def modify_state_dict(self, state_dict, new_c_start=2):
         new_state_dict = {}
+        # cond_channels = total_channels - gaussian_channels
+        # gaussian_channel = new_c_start
+        # cond_channel = new_c_start + 3
+        # sigma_channel = new_c_start + 
 
         for key, value in state_dict.items():
             if ('input_blocks.0.0.weight' == key) and (value.shape != self.model.input_blocks[0][0].weight.shape):
+            # if ('input_blocks.0.0.weight' == key):
+                # Extract the weights for the specified channels
                 gaussian_weights = value[:, :3, :, :]
                 cond_weights = value[:, 3:6, :, :]
                 if (self.in_channels == 6):
-                    gaussian_weights = torch.cat((gaussian_weights / 2.0, gaussian_weights / 2.0), dim=1)
-                    cond_weights = torch.cat((cond_weights / 2.0, cond_weights / 2.0), dim=1)
+                    # new_weights = torch.cat((gaussian_weights/100.0, new_weights), dim=1)
+                    gaussian_weights = torch.cat((gaussian_weights/2.0, gaussian_weights/2.0), dim=1)
+                    cond_weights = torch.cat((cond_weights/2.0, cond_weights/2.0), dim=1)
                 elif (self.in_channels == 1):
                     gaussian_weights = gaussian_weights.mean(dim=1, keepdim=True)
                     cond_weights = cond_weights.mean(dim=1, keepdim=True)
                 new_weights = torch.cat((gaussian_weights, cond_weights), dim=1)
+
+                # Stack the duplicated Gaussian weights with the noisy weights along the second axis
                 new_state_dict[key] = new_weights
             elif ('out.2.weight' == key) and (value.shape != self.model.out[2].weight.shape):
+            # elif ('out.2.weight' == key):
                 new_weights = value[:3, :, :, :]
                 if (self.in_channels == 1):
                     new_weights = new_weights.mean(dim=0, keepdim=True)
@@ -252,6 +320,7 @@ class TrainLoop:
                     new_weights = torch.cat((new_weights, sigma_weights), dim=0)
                 new_state_dict[key] = new_weights
             elif ('out.2.bias' == key) and (value.shape != self.model.out[2].bias.shape):
+            # elif ('out.2.bias' == key):
                 new_weights = value[:3]
                 if (self.in_channels == 1):
                     new_weights = new_weights.mean(dim=0, keepdim=True)
@@ -268,6 +337,7 @@ class TrainLoop:
             else:
                 new_state_dict[key] = value
         return new_state_dict
+
 
     def run_loop(self):
         best_psnr = 0.0
@@ -304,22 +374,55 @@ class TrainLoop:
             not self.lr_anneal_steps
             or self.step + self.resume_step < self.lr_anneal_steps
         ):
-            clean_tensor, noisy_tensor, image_filename, conditions = next(train_generator)
+            clean_tensor, noisy_tensor, image_filename, look_num, \
+            struct_tensor_s1, struct_tensor_s2, struct_tensor_s3, \
+            spectral_tensor, wavelet_tensor = next(train_generator)
 
             noisy_tensor = noisy_tensor.to(dist_util.dev())
             clean_tensor = clean_tensor.to(dist_util.dev())
+            look_num = look_num.to(dist_util.dev())
 
-            conditions = {
-                k: (v.to(dist_util.dev()) if torch.is_tensor(v)
-                    else tuple(t.to(dist_util.dev()) for t in v) if isinstance(v, tuple)
-                    else v)
-                for k, v in conditions.items()
-            }
+            struct_tensor_s1 = struct_tensor_s1.to(dist_util.dev())
+            struct_tensor_s2 = struct_tensor_s2.to(dist_util.dev())
+            struct_tensor_s3 = struct_tensor_s3.to(dist_util.dev())
+            spectral_tensor = spectral_tensor.to(dist_util.dev())
+            wavelet_tensor = wavelet_tensor.to(dist_util.dev())
 
             model_kwargs = {
                 "noisy": noisy_tensor,
-                **conditions,
+                "look_num": look_num,
+                "struct_tensor": struct_tensor_s1,
+                "struct_tensors": (
+                    struct_tensor_s1,
+                    struct_tensor_s2,
+                    struct_tensor_s3,
+                ),
+                "spectral_tensor": spectral_tensor,
+                "wavelet_tensor": wavelet_tensor,
             }
+
+            if self.step == 0:
+                print("\n========== CONDITIONING TENSOR AUDIT ==========")
+
+                def tensor_stats(name, x):
+                    print(
+                        f"{name:18s}"
+                        f" shape={tuple(x.shape)}"
+                        f" mean={x.mean().item():.4f}"
+                        f" std={x.std().item():.4f}"
+                        f" min={x.min().item():.4f}"
+                        f" max={x.max().item():.4f}"
+                        f" nan={torch.isnan(x).any().item()}"
+                    )
+
+                tensor_stats("Struct S1", struct_tensor_s1)
+                tensor_stats("Struct S2", struct_tensor_s2)
+                tensor_stats("Struct S3", struct_tensor_s3)
+                tensor_stats("Spectral", spectral_tensor)
+                tensor_stats("Wavelet", wavelet_tensor)
+
+                print("Look numbers:", look_num.tolist())
+                print("===============================================\n")
 
             net_loss += self.run_step(clean_tensor, model_kwargs)
 
@@ -348,30 +451,109 @@ class TrainLoop:
                 if best_psnr < avg_psnr:
                     best_psnr = avg_psnr
                     logger.log(f"New best PSNR: {avg_psnr:5.2f}, SSIM: {avg_ssim:5.3f}")
+                    print(f"New best PSNR: {avg_psnr:5.2f}, SSIM: {avg_ssim:5.3f}. Saving... ", end="", flush=True)
                     self.save()
+                    print("Done")
                 if best_max_psnr < max_psnr:
                     best_max_psnr = max_psnr
                     logger.log(f"New best maximum PSNR: {max_psnr:5.2f}")
+                    print(f"New best maximum PSNR: {max_psnr:5.2f}. Saving... ", end="", flush=True)
                     self.save(max=True)
+                    print("Done")
                 if ((self.step % self.save_interval) == 0):
                     logger.log(f"Saving latest model")
                     self.save(latest=True)
 
                 net_loss = 0.0
                 progress_bar = tqdm(total=self.log_interval, desc=f"[Training] Step: {self.step:5d}, Loss: 0.00e+00", unit="step")
-
+                
         # Save the last checkpoint if it wasn't already saved.
         if ((self.step % self.save_interval) != 0):
             self.save(latest=True)
 
+
     def run_step(self, batch, cond):
         loss = self.forward_backward(batch, cond)
+
+        print("\n========== Physics Gradients ==========")
+
+        for name, param in self.model.named_parameters():
+            if "physics" in name.lower():
+                if param.grad is None:
+                    print(name, "-> NO GRAD")
+                else:
+                    print(name, "->", param.grad.abs().mean().item())
+
+        print("=======================================\n")
+
+        fusion = self.model.physics_attention_bias_builder.physics_bias_fusion
+
+        print("\n===== PARAMETER CHECK =====")
+        print(
+            "requires_grad:",
+            fusion.alpha_orientation.requires_grad
+        )
+        print(
+            "is_leaf:",
+            fusion.alpha_orientation.is_leaf
+        )
+        print(
+            "grad_fn:",
+            fusion.alpha_orientation.grad_fn
+        )
+
+        found = False
+        for name, p in self.model.named_parameters():
+            if p is fusion.alpha_orientation:
+                print("FOUND IN MODEL:", name)
+                found = True
+
+        print("Found:", found)
+        print("===========================\n")
+
+        print(
+            "PHYSICS GATE AFTER STEP:",
+            "alpha_orientation =", fusion.alpha_orientation.item(),
+            "grad =", None if fusion.alpha_orientation.grad is None
+            else fusion.alpha_orientation.grad.item(),
+        )
+
+        print("\n===== FINAL OUTPUT CONV =====")
+
+        out_conv = self.model.out[2]
+
+        print("Reached final conv print", flush=True)
+
+        if out_conv.weight.grad is None:
+            print("Final conv grad: None", flush=True)
+        else:
+            print("Final conv grad:", out_conv.weight.grad.abs().mean().item(), flush=True)
+
+        print(
+            "bias grad:",
+            None if out_conv.bias.grad is None
+            else out_conv.bias.grad.abs().mean().item()
+        )
+
+        print("=============================\n")
+
         took_step = self.mp_trainer.optimize(self.opt)
+
+        print(
+            "PHYSICS GATE AFTER OPTIMIZER:",
+            "alpha_orientation =", fusion.alpha_orientation.item(),
+        )
+
+        #import sys
+        #print("\n===== FIRST ITERATION COMPLETE =====")
+        #sys.exit(0)
+
         if took_step:
             self._update_ema()
             self._anneal_lr()
             self.log_step()
         return loss
+
 
     def forward_backward(self, batch, cond):
         self.mp_trainer.zero_grad()
@@ -379,9 +561,16 @@ class TrainLoop:
         net_loss = 0.0
 
         for i in range(0, batch.shape[0], self.microbatch):
-            micro = batch[i: i + self.microbatch].to(dist_util.dev())
+
+            if self.step == 0 and i == 0:
+                print("\n===== MIDDLE BLOCK =====")
+                for idx, m in enumerate(self.model.middle_block):
+                    print(idx, type(m).__name__)
+                print("========================\n")
+
+            micro = batch[i : i + self.microbatch].to(dist_util.dev())
             micro_cond = {
-                k: v[i: i + self.microbatch].to(dist_util.dev()) if isinstance(v, torch.Tensor) else v
+                k : v[i : i + self.microbatch].to(dist_util.dev()) if isinstance(v, torch.Tensor) else v
                 for k, v in cond.items()
             }
             last_batch = (i + self.microbatch) >= batch.shape[0]
@@ -401,12 +590,22 @@ class TrainLoop:
                 with self.ddp_model.no_sync():
                     losses = compute_losses()
 
+
             if isinstance(self.schedule_sampler, LossAwareSampler):
                 self.schedule_sampler.update_with_local_losses(
                     t, losses["loss"].detach()
                 )
 
             loss = (losses["loss"] * weights).mean()
+
+            print("\n========== LOSS DEBUG ==========")
+            print("Total loss:", loss.item())
+
+            for k, v in losses.items():
+                if torch.is_tensor(v):
+                    print(f"{k}: {v.mean().item()}")
+
+            print("================================")
 
             x0_hat = reconstruct_x0(
                 self.eps_hook.last_x_t,
@@ -425,17 +624,22 @@ class TrainLoop:
                 x_hat=x0_hat_aux,
                 x_clean=micro.float().detach(),
             )
+
             loss = loss + self.lambda_struct * struct_loss
-            logger.logkv_mean("struct_loss", struct_loss.item())
+
+            logger.logkv_mean(
+                "struct_loss",
+                struct_loss.item(),
+            )
 
             # ── A5: Edge-Aware Loss ────────────────────────────────────
             # Reuses x0_hat already computed for A33 — zero extra UNet
-            # forward passes. micro.float().detach() prevents the loss
+            # forward passes.  micro.float().detach() prevents the loss
             # from computing gradients through the ground-truth path.
             if self.lambda_edge > 0.0:
                 edge_loss = self.edge_loss_fn(
-                    x_pred=x0_hat_aux,
-                    x_gt=micro.float().detach(),
+                    x_pred=x0_hat_aux,               # in autograd graph: x0_hat→eps_hat→UNet
+                    x_gt=micro.float().detach(), # GT detached: only x0_hat gets grads
                 )
                 loss = loss + self.lambda_edge * edge_loss
                 logger.logkv_mean("edge_loss", edge_loss.item())
@@ -447,16 +651,26 @@ class TrainLoop:
                     x_pred=x0_hat_aux,
                     x_gt=micro.float().detach(),
                 )
+
                 loss = loss + self.lambda_wavelet * wavelet_loss
-                logger.logkv_mean("wavelet_loss", wavelet_loss.item())
+
+                logger.logkv_mean(
+                    "wavelet_loss",
+                    wavelet_loss.item(),
+                )
             # ── A36: SSIM Loss ────────────────────────────────────────
             if self.lambda_ssim > 0.0:
                 ssim_loss = self.ssim_loss_fn(
                     x_pred=x0_hat_aux,
                     x_gt=micro.float().detach(),
                 )
+
                 loss = loss + self.lambda_ssim * ssim_loss
-                logger.logkv_mean("ssim_loss", ssim_loss.item())
+
+                logger.logkv_mean(
+                    "ssim_loss",
+                    ssim_loss.item(),
+                )
             # ──────────────────────────────────────────────────────────
 
             net_loss += loss
@@ -465,13 +679,201 @@ class TrainLoop:
                 self.diffusion, t, {k: v * weights for k, v in losses.items()}
             )
 
+            print("\n===== BACKWARD LOSS =====")
+            print("loss:", loss)
+            print("requires_grad:", loss.requires_grad)
+            print("grad_fn:", loss.grad_fn)
+            print("=========================")
+
             self.mp_trainer.backward(loss)
 
+            model = self.ddp_model.module if self.use_ddp else self.model
+
+            block = model.middle_block[2]
+            out_conv = model.out[2]
+
+            print("\n\n#############################")
+            print("INSIDE TRAINING BACKWARD")
+            print("#############################\n\n", flush=True)
+
+            print("\n========== TRAINING GRADIENTS ==========")
+
+            out_conv = (
+                self.ddp_model.module.out[2]
+                if hasattr(self.ddp_model, "module")
+                else self.model.out[2]
+            )
+
+            print(
+                "Final conv grad:",
+                None if out_conv.weight.grad is None
+                else out_conv.weight.grad.abs().mean().item()
+            )
+
+            print(
+                "Q grad:",
+                None if block.attn.q_proj.weight.grad is None
+                else block.attn.q_proj.weight.grad.abs().mean().item()
+            )
+
+            print(
+                "Gamma1 grad:",
+                None if block.gamma1.grad is None
+                else block.gamma1.grad.abs().mean().item()
+            )
+
+            print("========================================\n")
+
+            params = [
+                ("q_proj", block.attn.q_proj.weight),
+                ("k_proj", block.attn.k_proj.weight),
+                ("v_proj", block.attn.v_proj.weight),
+                ("out_proj", block.attn.out_proj.weight),
+                ("gamma1", block.gamma1),
+                ("gamma2", block.gamma2),
+            ]
+
+            for name, p in params:
+                if p.grad is None:
+                    print(f"{name:10s}: NO GRAD")
+                else:
+                    print(
+                        f"{name:10s}: "
+                        f"mean={p.grad.abs().mean().item():.8e} "
+                        f"max={p.grad.abs().max().item():.8e}"
+                    )
+
+            print("=============================================\n")
+
+            attn = self.model.middle_block[2].attn
+
+            if hasattr(attn, "last_attn_out"):
+                print("\n===== ATTN_OUT GRAD =====")
+                print("mean:", attn.last_attn_out.grad.abs().mean().item())
+                print("max :", attn.last_attn_out.grad.abs().max().item())
+                print("=========================\n")
+
+            block = self.model.middle_block[2]
+
+            if hasattr(block, "last_out"):
+                print("\n===== BLOCK OUT GRAD =====")
+                print("mean:", block.last_out.grad.abs().mean().item())
+                print("max :", block.last_out.grad.abs().max().item())
+                print("==========================\n")
+
+
+            model = self.ddp_model.module if self.use_ddp else self.model
+
+            print("\n===== BIAS GRAD =====")
+
+            if hasattr(model, "_debug_physics_bias"):
+                print(model._debug_physics_bias.grad)
+            else:
+                print("No debug physics bias found.")
+
+            print("=====================\n")
+
+            attn = (
+                self.model
+                .middle_block[2]      # adjust index if your PhysicsTransformerBlock is elsewhere
+                .attn
+            )
+
+            if hasattr(attn, "last_bias"):
+                print("\n===== BIAS GRAD =====")
+                print(attn.last_bias.grad)
+                print("=====================\n")
+
+            fusion = self.model.physics_attention_bias_builder.physics_bias_fusion
+
+            print("\n===== RAW MODEL GRAD =====")
+            print("alpha =", fusion.alpha_orientation.item())
+            print("grad  =", fusion.alpha_orientation.grad)
+            print("==========================")
+
+            print("\n========== Physics Gradients ==========")
+
+            for name, param in self.model.named_parameters():
+                if "physics" in name.lower():
+                    if param.grad is None:
+                        print(name, "-> NO GRAD")
+                    else:
+                        print(name, "->", param.grad.abs().mean().item())
+
+            print("=======================================\n")
+
+            # =====================================================
+            # GRADIENT BISECTION DEBUG
+            # =====================================================
+
+            model = (
+                self.ddp_model.module
+                if hasattr(self.ddp_model, "module")
+                else self.ddp_model
+            )
+
+            print("\n========== GRADIENT BISECTION ==========")
+
+            if hasattr(model, "debug_h_before"):
+                g = model.debug_h_before.grad
+                if g is None:
+                    print("h_before.grad : None")
+                else:
+                    print(
+                        "h_before.grad :",
+                        g.abs().mean().item(),
+                        g.abs().max().item(),
+                    )
+
+            if hasattr(model, "debug_h_after"):
+                g = model.debug_h_after.grad
+                if g is None:
+                    print("h_after.grad  : None")
+                else:
+                    print(
+                        "h_after.grad  :",
+                        g.abs().mean().item(),
+                        g.abs().max().item(),
+                    )
+
+            # Existing physics bias
+            if hasattr(model, "_debug_physics_bias"):
+                g = model._debug_physics_bias.grad
+                if g is None:
+                    print("physics_bias.grad : None")
+                else:
+                    print(
+                        "physics_bias.grad :",
+                        g.abs().mean().item(),
+                        g.abs().max().item(),
+                    )
+
+            # Existing attention output
+            try:
+                block = model.middle_block[2]
+
+                if hasattr(block.attn, "last_attn_out"):
+                    g = block.attn.last_attn_out.grad
+                    if g is None:
+                        print("attn_out.grad : None")
+                    else:
+                        print(
+                            "attn_out.grad :",
+                            g.abs().mean().item(),
+                            g.abs().max().item(),
+                        )
+            except Exception:
+                pass
+
+            print("========================================\n")
+
         return net_loss / self.batch_size
+
 
     def _update_ema(self):
         for rate, params in zip(self.ema_rate, self.ema_params):
             update_ema(params, self.mp_trainer.master_params, rate=rate)
+
 
     def _anneal_lr(self):
         if not self.lr_anneal_steps:
@@ -481,9 +883,11 @@ class TrainLoop:
         for param_group in self.opt.param_groups:
             param_group["lr"] = lr
 
+
     def log_step(self):
         logger.logkv("step", self.step + self.resume_step)
         logger.logkv("samples", (self.step + self.resume_step + 1) * self.global_batch)
+
 
     def save(self, latest=False, max=False):
         logger_dir = logger.get_dir()
@@ -503,6 +907,11 @@ class TrainLoop:
         save_checkpoint(0, self.mp_trainer.master_params)
         for rate, params in zip(self.ema_rate, self.ema_params):
             save_checkpoint(rate, params)
+
+        # if dist.get_rank() == 0:
+        #     opt_filename = f"opt_{savetype}.pt"
+        #     with bf.BlobFile(bf.join(logger_dir, opt_filename), "wb") as f:
+        #         torch.save(self.opt.state_dict(), f)
 
         if dist.is_initialized():
             dist.barrier()
@@ -524,10 +933,14 @@ def parse_resume_step_from_filename(filename):
 
 
 def get_blob_logdir():
+    # You can change this to be a separate path to save checkpoints to
+    # a blobstore or some external drive.
     return logger.get_dir()
 
 
 def find_resume_checkpoint():
+    # On your infrastructure, you may want to override this to automatically
+    # discover the latest checkpoint on your blob storage, etc.
     return None
 
 
@@ -544,6 +957,7 @@ def find_ema_checkpoint(main_checkpoint, rate):
 def log_loss_dict(diffusion, ts, losses):
     for key, values in losses.items():
         logger.logkv_mean(key, values.mean().item())
+        # Log the quantiles (four quartiles, in particular).
         for sub_t, sub_loss in zip(ts.cpu().numpy(), values.detach().cpu().numpy()):
             quartile = int(4 * sub_t / diffusion.num_timesteps)
             logger.logkv_mean(f"{key}_q{quartile}", sub_loss)
