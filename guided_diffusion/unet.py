@@ -519,6 +519,17 @@ class UNetModel(nn.Module):
             time_embed_dim=time_embed_dim
         )
 
+        ########################################################################
+        # Adaptive Physics Condition Fusion
+        ########################################################################
+
+        self.condition_gate = nn.Sequential(
+            nn.LayerNorm(time_embed_dim),
+            nn.Linear(time_embed_dim, time_embed_dim // 2),
+            nn.GELU(),
+            nn.Linear(time_embed_dim // 2, 1)
+        )
+
         self.physics_attention_bias_builder = PhysicsAttentionBiasBuilder()
 
         if self.num_classes is not None:
@@ -733,24 +744,83 @@ class UNetModel(nn.Module):
 
         if USE_LOOK and look_num is not None:
             look_emb = self.look_emb(look_num).to(self.dtype)
-            emb = emb + look_emb
 
         if USE_PHYSICS and struct_tensor is not None:
+<<<<<<< HEAD
             struct_emb = self.struct_encoder(struct_tensor).to(self.dtype)
             emb = emb + struct_emb
+=======
+            struct_emb = self.struct_encoder(struct_tensor)
+>>>>>>> 71faf38 (Add gradient debugging for physics-aware attention)
 
         if USE_MS and struct_tensors is not None:
             st1, st2, st3 = struct_tensors
             ms_struct_emb = self.ms_struct_encoder(st1, st2, st3)
-            emb = emb + ms_struct_emb
 
         if USE_SPECTRAL and spectral_tensor is not None:
             spectral_emb = self.tensor_spectral_encoder(spectral_tensor)
-            emb = emb + spectral_emb
 
         if USE_WAVELET and wavelet_tensor is not None:
             wavelet_emb = self.wavelet_encoder(wavelet_tensor)
-            emb = emb + wavelet_emb
+
+        condition_names = []
+        condition_embeddings = []
+
+        if look_emb is not None:
+            condition_names.append("Look")
+            condition_embeddings.append(look_emb)
+
+        if struct_emb is not None:
+            condition_names.append("Struct")
+            condition_embeddings.append(struct_emb)
+
+        if ms_struct_emb is not None:
+            condition_names.append("MSStruct")
+            condition_embeddings.append(ms_struct_emb)
+
+        if spectral_emb is not None:
+            condition_names.append("Spectral")
+            condition_embeddings.append(spectral_emb)
+
+        if wavelet_emb is not None:
+            condition_names.append("Wavelet")
+            condition_embeddings.append(wavelet_emb)
+
+        if len(condition_embeddings) > 0:
+
+            scores = torch.stack(
+                [
+                    self.condition_gate(e.float()).squeeze(-1)
+                    for e in condition_embeddings
+                ],
+                dim=1
+            )
+
+            weights = torch.softmax(scores, dim=1).to(self.dtype)
+
+            fused_embedding = emb.new_zeros(emb.shape)
+
+            for i, e in enumerate(condition_embeddings):
+
+                fused_embedding += weights[:, i:i+1] * e
+
+            emb = emb + fused_embedding
+
+        if (self.training
+            and len(condition_embeddings) > 0
+            and not hasattr(self, "_condition_gate_printed")
+        ):
+
+            self._condition_gate_printed = True
+
+            print("\n======= Adaptive Condition Fusion =======")
+
+            mean_weights = weights.mean(dim=0).detach().cpu()
+
+            for name, w in zip(condition_names, mean_weights):
+                print(f"{name:10s}: {w.item():.4f}")
+
+            print("=========================================\n")
 
         print("\n===== DTYPE AUDIT =====")
         print("emb         :", emb.dtype)
@@ -901,9 +971,27 @@ class UNetModel(nn.Module):
         else:
             print("physics bias = None")
 
+        # =====================================================
+        # DEBUG : gradient entering transformer
+        # =====================================================
+        if h.requires_grad:
+            h.retain_grad()
+
+        self.debug_h_before = h
+
         h = self.middle_block(
-            h, emb, physics_attention_bias=physics_attention_bias
+            h,
+            emb,
+            physics_attention_bias=physics_attention_bias
         )
+
+        # =====================================================
+        # DEBUG : gradient leaving transformer
+        # =====================================================
+        if h.requires_grad:
+            h.retain_grad()
+
+        self.debug_h_after = h
 
         for module in self.output_blocks:
             h = th.cat([h, hs.pop()], dim=1)

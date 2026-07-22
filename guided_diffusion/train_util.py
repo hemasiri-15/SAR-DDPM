@@ -628,6 +628,7 @@ class TrainLoop:
             )
             self.mp_trainer.backward(loss)
 
+<<<<<<< HEAD
             attn = self.model.middle_block[2].attn
 
             if hasattr(attn, "last_attn_out"):
@@ -684,6 +685,72 @@ class TrainLoop:
                         print(name, "->", param.grad.abs().mean().item())
 
             print("=======================================\n")
+=======
+            # =====================================================
+            # GRADIENT BISECTION DEBUG
+            # =====================================================
+
+            model = (
+                self.ddp_model.module
+                if hasattr(self.ddp_model, "module")
+                else self.ddp_model
+            )
+
+            print("\n========== GRADIENT BISECTION ==========")
+
+            if hasattr(model, "debug_h_before"):
+                g = model.debug_h_before.grad
+                if g is None:
+                    print("h_before.grad : None")
+                else:
+                    print(
+                        "h_before.grad :",
+                        g.abs().mean().item(),
+                        g.abs().max().item(),
+                    )
+
+            if hasattr(model, "debug_h_after"):
+                g = model.debug_h_after.grad
+                if g is None:
+                    print("h_after.grad  : None")
+                else:
+                    print(
+                        "h_after.grad  :",
+                        g.abs().mean().item(),
+                        g.abs().max().item(),
+                    )
+
+            # Existing physics bias
+            if hasattr(model, "_debug_physics_bias"):
+                g = model._debug_physics_bias.grad
+                if g is None:
+                    print("physics_bias.grad : None")
+                else:
+                    print(
+                        "physics_bias.grad :",
+                        g.abs().mean().item(),
+                        g.abs().max().item(),
+                    )
+
+            # Existing attention output
+            try:
+                block = model.middle_block[2]
+
+                if hasattr(block.attn, "last_attn_out"):
+                    g = block.attn.last_attn_out.grad
+                    if g is None:
+                        print("attn_out.grad : None")
+                    else:
+                        print(
+                            "attn_out.grad :",
+                            g.abs().mean().item(),
+                            g.abs().max().item(),
+                        )
+            except Exception:
+                pass
+
+            print("========================================\n")
+>>>>>>> 71faf38 (Add gradient debugging for physics-aware attention)
 
         return net_loss / self.batch_size
 
