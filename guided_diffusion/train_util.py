@@ -304,7 +304,24 @@ class TrainLoop:
             not self.lr_anneal_steps
             or self.step + self.resume_step < self.lr_anneal_steps
         ):
-            clean_tensor, noisy_tensor, image_filename, conditions = next(train_generator)
+            print("DEBUG 1: before next(train_generator)", flush=True)
+
+            (
+                clean_tensor,
+                noisy_tensor,
+                image_filename,
+                conditions,
+            ) = next(train_generator)
+       
+            print("DEBUG 2: batch loaded", flush=True)
+
+            look_num = conditions["look_num"]
+
+            struct_tensor_s1, struct_tensor_s2, struct_tensor_s3 = \
+                conditions["struct_tensors"]
+
+            spectral_tensor = conditions["spectral_tensor"]
+            wavelet_tensor = conditions["wavelet_tensor"]
 
             noisy_tensor = noisy_tensor.to(dist_util.dev())
             clean_tensor = clean_tensor.to(dist_util.dev())
@@ -321,7 +338,11 @@ class TrainLoop:
                 **conditions,
             }
 
+            print("DEBUG 3: before run_step", flush=True)
+
             net_loss += self.run_step(clean_tensor, model_kwargs)
+
+            print("DEBUG 4: after run_step", flush=True)
 
             self.step += 1
 
@@ -408,6 +429,11 @@ class TrainLoop:
 
             loss = (losses["loss"] * weights).mean()
 
+            print("Grad enabled:", torch.is_grad_enabled())
+
+            print("\n========== LOSS DEBUG ==========")
+            print("Total loss:", loss.item())
+
             x0_hat = reconstruct_x0(
                 self.eps_hook.last_x_t,
                 self.eps_hook.last_t,
@@ -466,6 +492,14 @@ class TrainLoop:
             )
 
             self.mp_trainer.backward(loss)
+
+            total_grad = 0.0
+
+            for p in self.model.parameters():
+                if p.grad is not None:
+                    total_grad += p.grad.abs().sum().item()
+
+            print("TOTAL GRAD:", total_grad)
 
         return net_loss / self.batch_size
 

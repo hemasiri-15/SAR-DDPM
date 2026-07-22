@@ -100,13 +100,16 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
                 clean_tensor,
                 noisy_tensor,
                 image_filename,
-                look_num,
-                struct_tensor_s1,
-                struct_tensor_s2,
-                struct_tensor_s3,
-                spectral_tensor,
-                wavelet_tensor,
+                conditions,
             ) = data_tuple
+
+            look_num = conditions["look_num"]
+
+            struct_tensor_s1, struct_tensor_s2, struct_tensor_s3 = \
+                conditions["struct_tensors"]
+
+            spectral_tensor = conditions["spectral_tensor"]
+            wavelet_tensor = conditions["wavelet_tensor"]
 
             clean_tensor = clean_tensor.to(device)
             noisy_tensor = noisy_tensor.to(device)

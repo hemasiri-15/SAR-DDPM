@@ -87,9 +87,15 @@ def main():
 
     logger.log("Loading model from checkpoint:" + test_checkpoint)
     dict_load = dist_util.load_state_dict(test_checkpoint, map_location=dist_util.dev())
+    logger.log("DEBUG 1")
+
     model.load_state_dict(dict_load, strict=False)
+    logger.log("DEBUG 2")
+
     if training_args['use_fp16']:
+        logger.log("DEBUG 3")
         model.convert_to_fp16()
+        logger.log("DEBUG 4")
             
     logger.log("Beginning testing...")
 
@@ -156,58 +162,58 @@ def main():
 #     evaluate_sar(sar_model, dist_util.dev(), training_args['in_channels'], training_args['large_size'])
 # 
 # 
-# def create_argparser():
-#     parser = argparse.ArgumentParser()
-#     add_dict_to_argparser(parser, default_args(test=True))
-#     return parser
-# 
-# 
-# def get_most_recent_log_folder(logs_dir):
-#     folders = [f for f in os.listdir(logs_dir) if os.path.isdir(os.path.join(logs_dir, f))]
-#     if len(folders) == 0:
-#         raise FileNotFoundError(f"No log folders found in {logs_dir}")
-#     date_folders = [(folder, datetime.strptime(folder.split('_')[-1], '%Y-%m-%d-%H-%M-%S')) for folder in folders]
-#     most_recent_folder = max(date_folders, key=lambda x: x[1])[0]
-#     return os.path.join(logs_dir, most_recent_folder)
-# 
-# 
-# def parse_args_from_log(log_file):
-#     args_dict = {}
-#     try:
-#         with open(log_file, 'r') as file:
-#             for line in file:
-#                 if line.startswith("Args: Namespace"):
-#                     args_str = line.strip().lstrip("Args: Namespace(").rstrip(")")
-#                     
-#                     # Regex to match key-value pairs, handling quoted values with commas
-#                     pattern = re.compile(r"(\w+)=('.*?'|\".*?\"|[^,]+)")
-#                     
-#                     matches = pattern.findall(args_str)
-#                     for key, value in matches:
-#                         # Remove the quotes if the value is a quoted string
-#                         if value.startswith(("'", '"')) and value.endswith(("'", '"')):
-#                             value = value[1:-1]
-#                         # Put the value into the correct format
-#                         try:
-#                             if value.lower() == 'true':
-#                                 value = True
-#                             elif value.lower() == 'false':
-#                                 value = False
-#                             elif value.isdigit():
-#                                 value = int(value)
-#                             else:
-#                                 try:
-#                                     value = float(value)
-#                                 except ValueError:
-#                                     pass  # keep as string if it's neither int nor float
-#                         except ValueError:
-#                             pass
-#                         args_dict[key] = value
-#                     break
-#     except Exception as e:
-#         raise Exception(f"An error occurred while parsing the log file {log_file}: {e}")
-#     return args_dict
-# 
-# 
-# if __name__ == "__main__":
-#     main()
+def create_argparser():
+    parser = argparse.ArgumentParser()
+    add_dict_to_argparser(parser, default_args(test=True))
+    return parser
+
+
+def get_most_recent_log_folder(logs_dir):
+    folders = [f for f in os.listdir(logs_dir) if os.path.isdir(os.path.join(logs_dir, f))]
+    if len(folders) == 0:
+        raise FileNotFoundError(f"No log folders found in {logs_dir}")
+    date_folders = [(folder, datetime.strptime(folder.split('_')[-1], '%Y-%m-%d-%H-%M-%S')) for folder in folders]
+    most_recent_folder = max(date_folders, key=lambda x: x[1])[0]
+    return os.path.join(logs_dir, most_recent_folder)
+
+
+def parse_args_from_log(log_file):
+    args_dict = {}
+    try:
+        with open(log_file, 'r') as file:
+            for line in file:
+                if line.startswith("Args: Namespace"):
+                    args_str = line.strip().lstrip("Args: Namespace(").rstrip(")")
+                    
+                    # Regex to match key-value pairs, handling quoted values with commas
+                    pattern = re.compile(r"(\w+)=('.*?'|\".*?\"|[^,]+)")
+                    
+                    matches = pattern.findall(args_str)
+                    for key, value in matches:
+                        # Remove the quotes if the value is a quoted string
+                        if value.startswith(("'", '"')) and value.endswith(("'", '"')):
+                            value = value[1:-1]
+                        # Put the value into the correct format
+                        try:
+                            if value.lower() == 'true':
+                                value = True
+                            elif value.lower() == 'false':
+                                value = False
+                            elif value.isdigit():
+                                value = int(value)
+                            else:
+                                try:
+                                    value = float(value)
+                                except ValueError:
+                                    pass  # keep as string if it's neither int nor float
+                        except ValueError:
+                            pass
+                        args_dict[key] = value
+                    break
+    except Exception as e:
+        raise Exception(f"An error occurred while parsing the log file {log_file}: {e}")
+    return args_dict
+
+
+if __name__ == "__main__":
+    main()

@@ -452,15 +452,19 @@ class WaveletDataset(SpectralTensorDataset):
             dtype=torch.float32,
         )  # [4, H/2, W/2]
 
-        # ------ 6. Return 9-tuple ------
+        # ------ 6. Package all conditioning ------
+        conditions = {
+            "look_num": look_num,
+            "struct_tensor": s1,          # backward compatibility
+            "struct_tensors": (s1, s2, s3),
+            "spectral_tensor": spectral_tensor,
+            "wavelet_tensor": wavelet_tensor,
+        }
+
+        # ------ 7. Return unified interface ------
         return (
             clean,
             noisy,
             fname,
-            look_num,
-            s1,
-            s2,
-            s3,
-            spectral_tensor,
-            wavelet_tensor,
+            conditions,
         )
