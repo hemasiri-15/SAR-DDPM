@@ -319,7 +319,21 @@ class PhysicsAwareAttention(nn.Module):
 
             scores = scores + physics_attention_bias.unsqueeze(1).float()
 
+        if torch.isnan(scores).any():
+            raise RuntimeError("NaN in scores")
+
         weights = F.softmax(scores, dim=-1)
+
+        if torch.isnan(weights).any():
+            raise RuntimeError("NaN after softmax")
+
+        # Convert to same dtype as V BEFORE matmul
+        weights = weights.to(v.dtype)
+
+        attn_out = torch.matmul(weights, v)
+
+        if torch.isnan(attn_out).any():
+            raise RuntimeError("NaN in attention output")
 
         if physics_attention_bias is not None:
             with torch.no_grad():

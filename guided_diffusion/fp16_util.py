@@ -194,6 +194,17 @@ class MixedPrecisionTrainer:
         logger.logkv_mean("lg_loss_scale", self.lg_loss_scale)
         model_grads_to_master_grads(self.param_groups_and_shapes, self.master_params)
         grad_norm, param_norm = self._compute_norms(grad_scale=2 ** self.lg_loss_scale)
+
+        for name, p in self.model.named_parameters():
+            if p.grad is not None:
+                if not torch.isfinite(p.grad).all():
+                    print("\n==============================")
+                    print("NaN gradient in:", name)
+                    print("grad mean:", p.grad.float().mean().item())
+                    print("grad max :", p.grad.float().abs().max().item())
+                    print("==============================")
+                    raise RuntimeError(f"NaN gradient in {name}")
+
         if check_overflow(grad_norm):
             self.lg_loss_scale -= 1
             logger.log(f"Found NaN, decreased lg_loss_scale to {self.lg_loss_scale}")
@@ -220,11 +231,31 @@ class MixedPrecisionTrainer:
     def _compute_norms(self, grad_scale=1.0):
         grad_norm = 0.0
         param_norm = 0.0
-        for p in self.master_params:
+
+        model_names = [n for n, _ in self.model.named_parameters()]
+
+        for name, p in zip(model_names, self.master_params):
             with th.no_grad():
+
+                if not th.isfinite(p).all():
+                    raise RuntimeError(f"Non-finite parameter: {name}")
+
                 param_norm += th.norm(p, p=2, dtype=th.float32).item() ** 2
+
                 if p.grad is not None:
-                    grad_norm += th.norm(p.grad, p=2, dtype=th.float32).item() ** 2
+
+                    if not th.isfinite(p.grad).all():
+                        print("\n========================")
+                        print("NaN gradient in:", name)
+                        print("========================")
+                        raise RuntimeError(f"NaN gradient in {name}")
+
+                    grad_norm += th.norm(
+                        p.grad,
+                        p=2,
+                        dtype=th.float32
+                    ).item() ** 2
+
         return np.sqrt(grad_norm) / grad_scale, np.sqrt(param_norm)
 
     def master_params_to_state_dict(self, master_params):

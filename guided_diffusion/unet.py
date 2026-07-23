@@ -953,6 +953,12 @@ class UNetModel(nn.Module):
 
                 self._physics_stats_printed = True
 
+        if torch.isnan(h).any():
+            raise RuntimeError("NaN in bottleneck features")
+
+        if not torch.isfinite(h).all():
+            raise RuntimeError("Non-finite values in bottleneck features")
+
         print("\n===== BOTTLENECK AUDIT =====")
         print("h mean :", h.mean().item())
         print("h std  :", h.std().item())

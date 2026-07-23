@@ -67,24 +67,6 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
 
     net_time = 0.0 # sum evaluation times
     
-    import csv
-
-    csv_file = None
-    csv_writer = None
-
-    if images_dir is not None:
-        csv_path = os.path.join(images_dir, "metrics.csv")
-        csv_file = open(csv_path, "w", newline="")
-        csv_writer = csv.writer(csv_file)
-
-        csv_writer.writerow([
-            "Image",
-            "PSNR",
-            "SSIM",
-            "LPIPS",
-            "Runtime_sec",
-        ])
-
     with torch.no_grad():
         batch = next(iter(loader))
         clean_tensor, noisy_tensor, image_filename = batch[:3]
@@ -323,10 +305,6 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
             img_vifp = [0.0]*batch_size
 
             for b in range(batch_size):
-
-                print("clean :", clean_image.min().item(), clean_image.max().item())
-                print("pred  :", pred_image.min().item(), pred_image.max().item())
-
                 img_psnr[b] = psnr(clean_image_np[b], pred_image_np[b])
                 img_ssim[b] = ssim(clean_image_np[b], pred_image_np[b], data_range=1)
                 # img_vifp[b] = vifp(clean_image_np[b], pred_image_np[b])
@@ -345,33 +323,8 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
                 # Save clean and predicted clean images
                 if (images_dir is not None):
                     save_filename = os.path.basename(image_filename[i])
-
-                    # Keep the old comparison strip (optional)
-                    save_test_images(
-                        os.path.join(images_dir, save_filename),
-                        noisy_image_np[i],
-                        pred_image_np[i],
-                        clean_image_np[i],
-                    )
-
-                    # Save paper-ready outputs
-                    save_paper_images(
-                        images_dir,
-                        save_filename,
-                        noisy_image_np[i],
-                        pred_image_np[i],
-                        clean_image_np[i],
-                    )
-
-                    if csv_writer is not None:
-                        csv_writer.writerow([
-                            save_filename,
-                            f"{img_psnr[i]:.4f}",
-                            f"{img_ssim[i]:.6f}",
-                            f"{img_lpips[i]:.6f}",
-                            f"{elapsed_time / batch_size:.4f}",
-                        ])
-
+                    save_filename = os.path.join(images_dir, save_filename)
+                    save_test_images(save_filename, noisy_image_np[i], pred_image_np[i], clean_image_np[i])
 
                 if log:
                     num_digits = int(math.log10(len(loader))) + 1 if len(loader) != 0 else 1
@@ -484,20 +437,6 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
     plt.savefig(os.path.join(logger.get_dir(), 'PSNR_plot.png'))
     plt.close(fig)
 
-    if images_dir is not None:
-        summary_path = os.path.join(images_dir, "summary.txt")
-
-        with open(summary_path, "w") as f:
-            f.write("===== Evaluation Summary =====\n\n")
-            f.write(f"Average PSNR   : {net_psnr:.4f}\n")
-            f.write(f"Average SSIM   : {net_ssim:.6f}\n")
-            f.write(f"Average Runtime: {net_time:.4f} sec\n")
-            f.write(f"Average MSE    : {net_mse:.6f}\n")
-            f.write(f"Best Avg PSNR  : {max_psnr:.4f}\n")
-
-    if csv_file is not None:
-        csv_file.close()
-
     return net_psnr, net_ssim, net_time, net_mse, max_psnr
 
 
@@ -537,88 +476,6 @@ def save_test_images(img_name, *arrays):
 
     # Save the final image
     new_image.save(img_name)
-
-
-def save_paper_images(output_dir,
-                      image_name,
-                      noisy_img,
-                      pred_img,
-                      clean_img):
-    """
-    Save publication-quality outputs.
-
-    Directory structure:
-
-    output_dir/
-        noisy/
-        prediction/
-        clean/
-        difference/
-        panel/
-    """
-
-    folders = {
-        "noisy": os.path.join(output_dir, "noisy"),
-        "prediction": os.path.join(output_dir, "prediction"),
-        "clean": os.path.join(output_dir, "clean"),
-        "difference": os.path.join(output_dir, "difference"),
-        "panel": os.path.join(output_dir, "panel"),
-    }
-
-    for f in folders.values():
-        os.makedirs(f, exist_ok=True)
-
-    # Convert arrays to uint8 if needed
-    noisy_img = noisy_img.astype(np.uint8)
-    pred_img = pred_img.astype(np.uint8)
-    clean_img = clean_img.astype(np.uint8)
-
-    diff_img = np.abs(
-        pred_img.astype(np.int16) -
-        clean_img.astype(np.int16)
-    ).astype(np.uint8)
-
-    Image.fromarray(noisy_img).save(
-        os.path.join(folders["noisy"], image_name)
-    )
-
-    Image.fromarray(pred_img).save(
-        os.path.join(folders["prediction"], image_name)
-    )
-
-    Image.fromarray(clean_img).save(
-        os.path.join(folders["clean"], image_name)
-    )
-
-    Image.fromarray(diff_img).save(
-        os.path.join(folders["difference"], image_name)
-    )
-
-    border = 3
-
-    imgs = [
-        Image.fromarray(noisy_img),
-        Image.fromarray(pred_img),
-        Image.fromarray(clean_img),
-        Image.fromarray(diff_img),
-    ]
-
-    w, h = imgs[0].size
-
-    canvas = Image.new(
-        "L",
-        (
-            4 * w + 3 * border,
-            h,
-        ),
-    )
-
-    for i, img in enumerate(imgs):
-        canvas.paste(img, (i * (w + border), 0))
-
-    canvas.save(
-        os.path.join(folders["panel"], image_name)
-    )
 
 
 def evaluate_sar(model, device, num_channels, image_size):
