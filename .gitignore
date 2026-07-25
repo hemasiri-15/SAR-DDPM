@@ -31,6 +31,7 @@ events.out.*
 # Outputs
 outputs/
 results/
+processed_data/
 
 # OS files
 .DS_Store
@@ -50,3 +51,18 @@ DSIFN/
 AID/
 SAR_despeckling_dataset/
 Training_Data/
+
+# Dataset archives
+*.tar
+*.tar.gz
+*.zip
+
+# Debug outputs
+debug_train/
+debug_val/
+
+# Temporary logs
+all_prints.txt
+
+# Raw datasets
+datasets/
