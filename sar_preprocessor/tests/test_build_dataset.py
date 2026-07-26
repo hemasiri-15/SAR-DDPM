@@ -168,23 +168,23 @@ def test_process_dataset_writes_split_output_dirs_and_manifest(tmp_path, monkeyp
     reader = _make_fake_reader("fake_manifest_run", splits=("train", "val", "test"))
     _register_reader(monkeypatch, "fake_manifest_run", reader)
 
-    written = build_dataset.process_dataset(input_dir=input_dir, output_dir=output_dir)
+    written = build_dataset.process_dataset(input_dir=input_dir, output_dir=output_dir, patch_size=4)
 
-    # 6 total samples * 2 patches/sample (patchify stub) = 12 files.
-    assert len(written) == 12
+    # 6 total samples * 4 patches/sample = 24 files.
+    assert len(written) == 24
     assert (output_dir / "train").is_dir()
     assert (output_dir / "val").is_dir()
     assert (output_dir / "test").is_dir()
-    assert len(list((output_dir / "train").glob("*.png"))) == 6  # 3 samples * 2 patches
+    assert len(list((output_dir / "train").glob("*.png"))) == 12  # 3 samples * 2 patches
 
     manifest = json.loads((output_dir / build_dataset._MANIFEST_FILENAME).read_text())
     assert manifest["dataset"] == "fake_manifest_run"
     assert manifest["splits"]["train"]["num_images"] == 3
-    assert manifest["splits"]["train"]["num_patches"] == 6
+    assert manifest["splits"]["train"]["num_patches"] == 12
     assert manifest["splits"]["val"]["num_images"] == 2
     assert manifest["splits"]["test"]["num_images"] == 1
     assert manifest["total_images"] == 6
-    assert manifest["total_patches"] == 12
+    assert manifest["total_patches"] == 24
     assert manifest["total_errors"] == 0
     assert manifest["workers"] == 1
 
@@ -200,10 +200,13 @@ def test_process_dataset_filenames_unique_across_samples_in_a_split(tmp_path, mo
     reader = _make_fake_reader("fake_unique_names", splits=("train",))
     _register_reader(monkeypatch, "fake_unique_names", reader)
 
-    written = build_dataset.process_dataset(input_dir=input_dir, output_dir=output_dir)
+    written = build_dataset.process_dataset(input_dir=input_dir, output_dir=output_dir, patch_size=4)
 
-    assert len(written) == len(set(written)) == 4  # no filename collisions
-    stems = {p.stem.rsplit("_", 1)[0] for p in written}
+    assert len(written) == len(set(written)) == 8  # no filename collisions
+    stems = {
+        p.stem.rsplit("_r", 1)[0]
+        for p in written
+    }
     assert stems == {"fake_unique_names_sceneA", "fake_unique_names_sceneB"}
 
 
@@ -215,9 +218,9 @@ def test_process_dataset_split_less_dataset_keeps_original_layout(tmp_path, monk
     reader = _make_fake_reader("fake_no_splits_run")  # no SPLITS
     _register_reader(monkeypatch, "fake_no_splits_run", reader)
 
-    written = build_dataset.process_dataset(input_dir=input_dir, output_dir=output_dir)
+    written = build_dataset.process_dataset(input_dir=input_dir, output_dir=output_dir, patch_size=4)
 
-    assert len(written) == 2
+    assert len(written) == 4
     for p in written:
         assert p.parent == output_dir  # not nested under a split subdir
         assert p.name.startswith(f"fake_no_splits_run_{input_dir.name}")
@@ -250,14 +253,14 @@ def test_process_dataset_skip_existing_avoids_reprocessing(tmp_path, monkeypatch
     _register_reader(monkeypatch, "fake_resume_run", reader)
 
     first_written = build_dataset.process_dataset(
-        input_dir=input_dir, output_dir=output_dir, skip_existing=True
+        input_dir=input_dir, output_dir=output_dir, patch_size=4, skip_existing=True
     )
     assert len(read_calls) == 2
-    assert len(first_written) == 4
+    assert len(first_written) == 8
 
     # Second run: everything already has output on disk -> nothing reprocessed.
     second_written = build_dataset.process_dataset(
-        input_dir=input_dir, output_dir=output_dir, skip_existing=True
+        input_dir=input_dir, output_dir=output_dir, patch_size=4, skip_existing=True
     )
     assert len(read_calls) == 2  # unchanged: no new read() calls
     assert second_written == []  # nothing *newly* written this call
@@ -276,16 +279,17 @@ def test_process_dataset_skip_existing_reprocesses_if_output_deleted(tmp_path, m
     reader = _make_fake_reader("fake_resume_delete_run", splits=("train",))
     _register_reader(monkeypatch, "fake_resume_delete_run", reader)
 
-    build_dataset.process_dataset(input_dir=input_dir, output_dir=output_dir, skip_existing=True)
+    build_dataset.process_dataset(input_dir=input_dir, output_dir=output_dir, patch_size=4, skip_existing=True)
 
     # Delete the exported patches but keep the checkpoint file.
     for f in (output_dir / "train").glob("*.png"):
         f.unlink()
 
     second_written = build_dataset.process_dataset(
-        input_dir=input_dir, output_dir=output_dir, skip_existing=True
+        input_dir=input_dir, output_dir=output_dir, patch_size=4, skip_existing=True
     )
-    assert len(second_written) == 2  # reprocessed since output was missing
+    assert len(second_written) == 4
+    # reprocessed since output was missing
 
 
 # --------------------------------------------------------------------------
@@ -320,11 +324,11 @@ def test_process_dataset_parallel_matches_serial_output(tmp_path, monkeypatch):
     _register_reader(monkeypatch, "fake_parallel_run", reader)
 
     serial_written = build_dataset.process_dataset(
-        input_dir=input_dir, output_dir=output_dir_serial, workers=1
+        input_dir=input_dir, output_dir=output_dir_serial, patch_size=4, workers=1
     )
     parallel_written = build_dataset.process_dataset(
-        input_dir=input_dir, output_dir=output_dir_parallel, workers=2
+        input_dir=input_dir, output_dir=output_dir_parallel, patch_size=4, workers=2
     )
 
-    assert len(serial_written) == len(parallel_written) == 10
+    assert len(serial_written) == len(parallel_written) == 20
     assert {p.name for p in serial_written} == {p.name for p in parallel_written}

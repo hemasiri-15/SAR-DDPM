@@ -73,6 +73,21 @@ def export_patches(
     written: List[Path] = []
 
     for patch, (row, col) in patches:
+
+        # Skip empty or invalid patches
+        if (
+            patch.size == 0
+            or patch.shape[-2] == 0
+            or patch.shape[-1] == 0
+        ):
+            logger.warning(
+                "Skipping empty patch at (%d, %d) with shape %s",
+                row,
+                col,
+                patch.shape,
+            )
+            continue
+
         bands = _patch_to_uint8_images(patch)
 
         if len(bands) == 3:
