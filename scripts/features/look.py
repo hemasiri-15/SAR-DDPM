@@ -39,5 +39,6 @@ class LookCondition:
             Downstream, your UNet's look-embedding layer should consume
             this as an index (e.g. nn.Embedding(look_max+1, embed_dim)).
         """
-        look_num = int(self.rng.integers(self.look_min, self.look_max + 1))
+        supported_looks = np.array([1, 2, 4, 8, 10], dtype=np.int64)
+        look_num = int(self.rng.choice(supported_looks))
         return {"look_num": torch.tensor(look_num, dtype=torch.long)}

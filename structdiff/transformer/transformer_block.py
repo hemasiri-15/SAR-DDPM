@@ -329,7 +329,6 @@ class _BaseTransformerBlock(nn.Module):
         out = seq.transpose(1, 2).reshape(batch_size, channels, height, width)
 
         if out.requires_grad:
-            out.retain_grad()
             self.last_out = out
 
         if return_attention:
@@ -461,8 +460,8 @@ class PhysicsTransformerBlock(_BaseTransformerBlock):
         # PhysicsAwareAttention wraps its own nn.MultiheadAttention at
         # `self.attn.attn`, so its output projection lives one level
         # deeper than in TransformerBlock.
-        nn.init.zeros_(self.attn.attn.out_proj.weight)
-        nn.init.zeros_(self.attn.attn.out_proj.bias)
+        nn.init.zeros_(self.attn.out_proj.weight)
+        nn.init.zeros_(self.attn.out_proj.bias)
 
     def _attend(
         self,

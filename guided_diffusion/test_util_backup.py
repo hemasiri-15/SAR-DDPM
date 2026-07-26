@@ -55,13 +55,8 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
         elif sample_to_use == "SWEEP":
             logger.log("!! Averaged the last 8 samples !!\n")
         else:
-            raise ValueError(
-                f"Unknown sample_to_use='{sample_to_use}'. "
-                "Expected one of {'LAST', 'MAX', 'SWEEP'}."
-            )
+            exit(1)
     
-    print("[DEBUG] Entered evaluate()", flush=True)
-
     model.eval()
 
     net_psnr = 0.0 # sum PSNR metrics
@@ -72,24 +67,6 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
 
     net_time = 0.0 # sum evaluation times
     
-    import csv
-
-    csv_file = None
-    csv_writer = None
-
-    if images_dir is not None:
-        csv_path = os.path.join(images_dir, "metrics.csv")
-        csv_file = open(csv_path, "w", newline="")
-        csv_writer = csv.writer(csv_file)
-
-        csv_writer.writerow([
-            "Image",
-            "PSNR",
-            "SSIM",
-            "LPIPS",
-            "Runtime_sec",
-        ])
-
     with torch.no_grad():
         batch = next(iter(loader))
         clean_tensor, noisy_tensor, image_filename = batch[:3]
@@ -105,20 +82,18 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
                 progress=True,
             )
             
-        #metric_shape = (len(loader) * noisy_tensor.shape[0], len(itr_indexes))
-        #all_tensor_psnr = np.empty(metric_shape)
-        #all_tensor_ssim = np.empty(metric_shape)
-        #all_tensor_vifp = np.empty(metric_shape)
-        #all_tensor_lpips = np.empty(metric_shape)
+            itr_indexes = list(range(len(test_output)))
+        else:
+            itr_indexes = list(range(100)) # This may need to be changed
 
-        # Allocate metric buffers lazily once we know how many
-        # diffusion iterations were actually returned.
-        all_tensor_psnr = None
-        all_tensor_ssim = None
-        all_tensor_vifp = None
-        all_tensor_lpips = None
+        metric_shape = (len(loader) * noisy_tensor.shape[0], len(itr_indexes))
+        all_tensor_psnr = np.empty(metric_shape)
+        all_tensor_ssim = np.empty(metric_shape)
+        all_tensor_vifp = np.empty(metric_shape)
+        all_tensor_lpips = np.empty(metric_shape)
 
         progress_bar = tqdm(loader, desc=f"[{'Test' if test else 'Validation'}] PSNR: 00.00/00.00, SSIM: 0.000/0.000", unit='batch')
+
 
         for batch_idx, data_tuple in enumerate(progress_bar):
             (
@@ -166,7 +141,6 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
             batch_size = clean_tensor.shape[0]
 
             batch_start = time.perf_counter()
-            print("[DEBUG] Preparing cycle spinning", flush=True)
 
             if (cycle_spinning):
                 first = True
@@ -186,7 +160,8 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
                     EngineConfig(method="dynamic_hypergraph")
                 )
 
-                print("[DEBUG] CycleSpinningEngine created", flush=True)
+                samples = []
+                shifts = []
 
                 # For each cycle (in both directions)
                 for row in range(0, num_rows, cycle_width):
@@ -242,7 +217,6 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
                             "spectral_tensor": spectral_shifted,
                             "wavelet_tensor": wavelet_shifted,
                         }
-
                         # Get the predicted clean image
                         sample = sample_fn(
                                 model,
@@ -251,45 +225,43 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
                                 model_kwargs=model_kwargs,
                             )
 
+                        samples.append(sample)
+                        shifts.append((row, col))
+
                         # Unspin the image and add to the averaged image
                         if (first):
                             pred_tensor = (1.0/N)*sample
 
+                            print("=" * 80)
+                            print("row:", row, "col:", col)
+                            print("sample:", sample.shape)
+                            print("pred_tensor:", pred_tensor.shape)
+
                             first = False
                         else:
+                            print("row:", row, "col:", col)
+                            print("sample:", sample.shape)
+                            print("pred_tensor:", pred_tensor.shape)
+
                             pred_tensor[:, :, :, num_rows-row:, num_cols-col:] += (1.0/N) * sample[:, :, :, :row, :col]
                             pred_tensor[:, :, :, :num_rows-row, :num_cols-col] += (1.0/N) * sample[:, :, :, row:, col:]
                             pred_tensor[:, :, :, :num_rows-row, num_cols-col:] += (1.0/N) * sample[:, :, :, row:, :col]
                             pred_tensor[:, :, :, num_rows-row:, :num_cols-col] += (1.0/N) * sample[:, :, :, :row, col:]
             else:
                 # Otherwise, get the predicted clean image as normal
-
                 pred_tensor = sample_fn(
                                 model,
                                 noisy_tensor.shape,
                                 clip_denoised=True,
                                 model_kwargs=model_kwargs,
                             )
-
+                
             # Find the elapsed time
             elapsed_time = time.perf_counter() - batch_start
             net_time += elapsed_time
 
-            itr_indexes = list(range(pred_tensor.shape[0]))
-
             pred_tensor = pred_tensor[itr_indexes]
-
             iterations = pred_tensor.shape[0]
-            itr_indexes = list(range(iterations))
-
-            # Allocate metric arrays once, using the actual number of iterations.
-            if all_tensor_psnr is None:
-                metric_shape = (len(loader) * batch_size, iterations)
-
-                all_tensor_psnr = np.zeros(metric_shape, dtype=np.float32)
-                all_tensor_ssim = np.zeros(metric_shape, dtype=np.float32)
-                all_tensor_vifp = np.zeros(metric_shape, dtype=np.float32)
-                all_tensor_lpips = np.zeros(metric_shape, dtype=np.float32)
 
             pred_image = ((pred_tensor + 1.0)* 127.5).clamp(0, 255.0)
             pred_image = torch.round(torch.mean(pred_image, dim=2)) / 255.0
@@ -323,10 +295,7 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
             elif sample_to_use == "SWEEP":
                 pred_image = torch.mean(pred_image[-8:], dim=0)
             else:
-                raise ValueError(
-                    f"Unknown sample_to_use='{sample_to_use}'. "
-                    "Expected one of {'LAST', 'MAX', 'SWEEP'}."
-                )
+                exit(1)
                 
             pred_image_np = pred_image.cpu().numpy()
             clean_image_np = clean_image.cpu().numpy()
@@ -336,7 +305,6 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
             img_vifp = [0.0]*batch_size
 
             for b in range(batch_size):
-
                 img_psnr[b] = psnr(clean_image_np[b], pred_image_np[b])
                 img_ssim[b] = ssim(clean_image_np[b], pred_image_np[b], data_range=1)
                 # img_vifp[b] = vifp(clean_image_np[b], pred_image_np[b])
@@ -355,33 +323,8 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
                 # Save clean and predicted clean images
                 if (images_dir is not None):
                     save_filename = os.path.basename(image_filename[i])
-
-                    # Keep the old comparison strip (optional)
-                    save_test_images(
-                        os.path.join(images_dir, save_filename),
-                        noisy_image_np[i],
-                        pred_image_np[i],
-                        clean_image_np[i],
-                    )
-
-                    # Save paper-ready outputs
-                    save_paper_images(
-                        images_dir,
-                        save_filename,
-                        noisy_image_np[i],
-                        pred_image_np[i],
-                        clean_image_np[i],
-                    )
-
-                    if csv_writer is not None:
-                        csv_writer.writerow([
-                            save_filename,
-                            f"{img_psnr[i]:.4f}",
-                            f"{img_ssim[i]:.6f}",
-                            f"{img_lpips[i]:.6f}",
-                            f"{elapsed_time / batch_size:.4f}",
-                        ])
-
+                    save_filename = os.path.join(images_dir, save_filename)
+                    save_test_images(save_filename, noisy_image_np[i], pred_image_np[i], clean_image_np[i])
 
                 if log:
                     num_digits = int(math.log10(len(loader))) + 1 if len(loader) != 0 else 1
@@ -413,13 +356,6 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
                 net_vifp += batch_vifp
 
             progress_bar.set_description(desc=f"[{'Test' if test else 'Validation'}] PSNR: {batch_psnr:5.2f}/{(net_psnr/(batch_idx+1)):5.2f}, SSIM: {batch_ssim:5.3f}/{(net_ssim/(batch_idx+1)):5.3f}")
-
-            del pred_tensor
-            del pred_image
-            del clean_image
-            del noisy_image
-
-            torch.cuda.empty_cache()
 
         progress_bar.close()
 
@@ -501,20 +437,6 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
     plt.savefig(os.path.join(logger.get_dir(), 'PSNR_plot.png'))
     plt.close(fig)
 
-    if images_dir is not None:
-        summary_path = os.path.join(images_dir, "summary.txt")
-
-        with open(summary_path, "w") as f:
-            f.write("===== Evaluation Summary =====\n\n")
-            f.write(f"Average PSNR   : {net_psnr:.4f}\n")
-            f.write(f"Average SSIM   : {net_ssim:.6f}\n")
-            f.write(f"Average Runtime: {net_time:.4f} sec\n")
-            f.write(f"Average MSE    : {net_mse:.6f}\n")
-            f.write(f"Best Avg PSNR  : {max_psnr:.4f}\n")
-
-    if csv_file is not None:
-        csv_file.close()
-
     return net_psnr, net_ssim, net_time, net_mse, max_psnr
 
 
@@ -554,88 +476,6 @@ def save_test_images(img_name, *arrays):
 
     # Save the final image
     new_image.save(img_name)
-
-
-def save_paper_images(output_dir,
-                      image_name,
-                      noisy_img,
-                      pred_img,
-                      clean_img):
-    """
-    Save publication-quality outputs.
-
-    Directory structure:
-
-    output_dir/
-        noisy/
-        prediction/
-        clean/
-        difference/
-        panel/
-    """
-
-    folders = {
-        "noisy": os.path.join(output_dir, "noisy"),
-        "prediction": os.path.join(output_dir, "prediction"),
-        "clean": os.path.join(output_dir, "clean"),
-        "difference": os.path.join(output_dir, "difference"),
-        "panel": os.path.join(output_dir, "panel"),
-    }
-
-    for f in folders.values():
-        os.makedirs(f, exist_ok=True)
-
-    # Convert arrays to uint8 if needed
-    noisy_img = noisy_img.astype(np.uint8)
-    pred_img = pred_img.astype(np.uint8)
-    clean_img = clean_img.astype(np.uint8)
-
-    diff_img = np.abs(
-        pred_img.astype(np.int16) -
-        clean_img.astype(np.int16)
-    ).astype(np.uint8)
-
-    Image.fromarray(noisy_img).save(
-        os.path.join(folders["noisy"], image_name)
-    )
-
-    Image.fromarray(pred_img).save(
-        os.path.join(folders["prediction"], image_name)
-    )
-
-    Image.fromarray(clean_img).save(
-        os.path.join(folders["clean"], image_name)
-    )
-
-    Image.fromarray(diff_img).save(
-        os.path.join(folders["difference"], image_name)
-    )
-
-    border = 3
-
-    imgs = [
-        Image.fromarray(noisy_img),
-        Image.fromarray(pred_img),
-        Image.fromarray(clean_img),
-        Image.fromarray(diff_img),
-    ]
-
-    w, h = imgs[0].size
-
-    canvas = Image.new(
-        "L",
-        (
-            4 * w + 3 * border,
-            h,
-        ),
-    )
-
-    for i, img in enumerate(imgs):
-        canvas.paste(img, (i * (w + border), 0))
-
-    canvas.save(
-        os.path.join(folders["panel"], image_name)
-    )
 
 
 def evaluate_sar(model, device, num_channels, image_size):

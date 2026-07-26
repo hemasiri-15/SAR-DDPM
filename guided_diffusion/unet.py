@@ -629,12 +629,6 @@ class UNetModel(nn.Module):
 
         attn = self.middle_block[2].attn
 
-        print("weight mean:", attn.out_proj.weight.abs().mean().item())
-        print("weight max :", attn.out_proj.weight.abs().max().item())
-        print("bias mean  :", attn.out_proj.bias.abs().mean().item())
-
-        print("==========================\n")
-
         self._feature_size += ch
 
         self.output_blocks = nn.ModuleList([])
@@ -814,11 +808,6 @@ class UNetModel(nn.Module):
             for name, w in zip(condition_names, mean_weights):
                 print(f"{name:10s}: {w.item():.4f}")
 
-            print("=========================================\n")
-
-        print("\n===== DTYPE AUDIT =====")
-        print("emb         :", emb.dtype)
-
         if look_emb is not None:
             print("look_emb    :", look_emb.dtype)
 
@@ -833,8 +822,6 @@ class UNetModel(nn.Module):
 
         if wavelet_emb is not None:
             print("wavelet     :", wavelet_emb.dtype)
-
-        print("=======================\n")
 
         if (
             look_num is not None
@@ -924,19 +911,6 @@ class UNetModel(nn.Module):
                 struct_tensor_at_bottleneck
             )
 
-            if physics_attention_bias.requires_grad:
-                physics_attention_bias.retain_grad()
-                self._debug_physics_bias = physics_attention_bias
-
-            print(
-                "UNET physics bias requires_grad:",
-                physics_attention_bias.requires_grad
-            )
-            print(
-                "UNET physics bias grad_fn:",
-                physics_attention_bias.grad_fn
-            )
-
             if (
                 physics_attention_bias is not None
                 and not hasattr(self, "_physics_stats_printed")
@@ -953,6 +927,12 @@ class UNetModel(nn.Module):
 
                 self._physics_stats_printed = True
 
+        if torch.isnan(h).any():
+            raise RuntimeError("NaN in bottleneck features")
+
+        if not torch.isfinite(h).all():
+            raise RuntimeError("Non-finite values in bottleneck features")
+
         print("\n===== BOTTLENECK AUDIT =====")
         print("h mean :", h.mean().item())
         print("h std  :", h.std().item())
@@ -968,11 +948,6 @@ class UNetModel(nn.Module):
         # =====================================================
         # DEBUG : gradient entering transformer
         # =====================================================
-        if h.requires_grad:
-            h.retain_grad()
-
-        self.debug_h_before = h
-
         h = self.middle_block(
             h,
             emb,
@@ -982,11 +957,6 @@ class UNetModel(nn.Module):
         # =====================================================
         # DEBUG : gradient leaving transformer
         # =====================================================
-        if h.requires_grad:
-            h.retain_grad()
-
-        self.debug_h_after = h
-
         for module in self.output_blocks:
             h = th.cat([h, hs.pop()], dim=1)
             h = module(h, emb)

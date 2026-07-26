@@ -279,15 +279,6 @@ class PhysicsAwareAttention(nn.Module):
         v = v.view(B, N, H, Hd).transpose(1, 2)
 
 
-        print("\n===== QKV AUDIT =====")
-        print("Q std :", q.std().item())
-        print("K std :", k.std().item())
-        print("V std :", v.std().item())
-        print("Q mean:", q.mean().item())
-        print("K mean:", k.mean().item())
-        print("V mean:", v.mean().item())
-        print("=====================")
-
         # ----------------------------
         # logits
         # ----------------------------
@@ -299,27 +290,25 @@ class PhysicsAwareAttention(nn.Module):
 
         scores /= math.sqrt(Hd)
 
-        print("\n===== SCORE AUDIT =====")
-        print("scores mean :", scores.mean().item())
-        print("scores std  :", scores.std().item())
-        print("scores max  :", scores.abs().max().item())
-
-        if physics_attention_bias is not None:
-            print("bias mean   :", physics_attention_bias.mean().item())
-            print("bias std    :", physics_attention_bias.std().item())
-            print("bias max    :", physics_attention_bias.abs().max().item())
-
-        print("========================")
-
-        if physics_attention_bias is not None and physics_attention_bias.requires_grad:
-            physics_attention_bias.retain_grad()
-            self.last_bias = physics_attention_bias
-
         if physics_attention_bias is not None:
 
             scores = scores + physics_attention_bias.unsqueeze(1).float()
 
+        if torch.isnan(scores).any():
+            raise RuntimeError("NaN in scores")
+
         weights = F.softmax(scores, dim=-1)
+
+        if torch.isnan(weights).any():
+            raise RuntimeError("NaN after softmax")
+
+        # Convert to same dtype as V BEFORE matmul
+        weights = weights.to(v.dtype)
+
+        attn_out = torch.matmul(weights, v)
+
+        if torch.isnan(attn_out).any():
+            raise RuntimeError("NaN in attention output")
 
         if physics_attention_bias is not None:
             with torch.no_grad():
@@ -333,11 +322,6 @@ class PhysicsAwareAttention(nn.Module):
                 weights_no_bias = F.softmax(scores_no_bias, dim=-1)
 
                 diff = (weights - weights_no_bias).abs().mean()
-
-                print("\n===== ATTENTION EFFECT =====")
-                print("mean |Δweights| =", diff.item())
-                print("============================")
-
 
         weights = self.dropout_layer(weights)
 
@@ -353,16 +337,6 @@ class PhysicsAwareAttention(nn.Module):
             with torch.no_grad():
                 attn_no_bias = torch.matmul(weights_no_bias.to(v.dtype), v)
 
-                print("\n===== ATTENTION EFFECT =====")
-                print("mean |Δweights| :", (weights - weights_no_bias).abs().mean().item())
-                print("mean |Δattn_out|:", (attn_out - attn_no_bias).abs().mean().item())
-                print("============================")
-
-        print("\n===== ATTN BEFORE PROJ =====")
-        print("mean:", attn_out.mean().item())
-        print("std :", attn_out.std().item())
-        print("============================")
-
         attn_out = (
             attn_out.transpose(1, 2)
             .contiguous()
@@ -370,20 +344,6 @@ class PhysicsAwareAttention(nn.Module):
         )
 
         attn_out = self.out_proj(attn_out)
-
-        print("\n===== ATTN AFTER PROJ =====")
-        print("mean:", attn_out.mean().item())
-        print("std :", attn_out.std().item())
-        print("===========================")
-
-        print("\n===== OUT PROJ WEIGHTS =====")
-        print("weight std:", self.out_proj.weight.std().item())
-        print("weight max:", self.out_proj.weight.abs().max().item())
-        print("============================")
-
-        if attn_out.requires_grad:
-            attn_out.retain_grad()
-            self.last_attn_out = attn_out
 
         attn_weights = weights if return_attention else None
 
