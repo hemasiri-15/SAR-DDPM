@@ -22,7 +22,7 @@ def diffusion_defaults():
         learn_sigma=False,
         diffusion_steps=1000,
         noise_schedule="linear",
-        timestep_respacing="ddim100",
+        timestep_respacing="ddim5",
         use_kl=False,
         predict_xstart=False,
         rescale_timesteps=True,

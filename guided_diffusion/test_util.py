@@ -55,8 +55,13 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
         elif sample_to_use == "SWEEP":
             logger.log("!! Averaged the last 8 samples !!\n")
         else:
-            exit(1)
+            raise ValueError(
+                f"Unknown sample_to_use='{sample_to_use}'. "
+                "Expected one of {'LAST', 'MAX', 'SWEEP'}."
+            )
     
+    print("[DEBUG] Entered evaluate()", flush=True)
+
     model.eval()
 
     net_psnr = 0.0 # sum PSNR metrics
@@ -100,18 +105,20 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
                 progress=True,
             )
             
-            itr_indexes = list(range(len(test_output)))
-        else:
-            itr_indexes = list(range(100)) # This may need to be changed
+        #metric_shape = (len(loader) * noisy_tensor.shape[0], len(itr_indexes))
+        #all_tensor_psnr = np.empty(metric_shape)
+        #all_tensor_ssim = np.empty(metric_shape)
+        #all_tensor_vifp = np.empty(metric_shape)
+        #all_tensor_lpips = np.empty(metric_shape)
 
-        metric_shape = (len(loader) * noisy_tensor.shape[0], len(itr_indexes))
-        all_tensor_psnr = np.empty(metric_shape)
-        all_tensor_ssim = np.empty(metric_shape)
-        all_tensor_vifp = np.empty(metric_shape)
-        all_tensor_lpips = np.empty(metric_shape)
+        # Allocate metric buffers lazily once we know how many
+        # diffusion iterations were actually returned.
+        all_tensor_psnr = None
+        all_tensor_ssim = None
+        all_tensor_vifp = None
+        all_tensor_lpips = None
 
         progress_bar = tqdm(loader, desc=f"[{'Test' if test else 'Validation'}] PSNR: 00.00/00.00, SSIM: 0.000/0.000", unit='batch')
-
 
         for batch_idx, data_tuple in enumerate(progress_bar):
             (
@@ -159,6 +166,7 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
             batch_size = clean_tensor.shape[0]
 
             batch_start = time.perf_counter()
+            print("[DEBUG] Preparing cycle spinning", flush=True)
 
             if (cycle_spinning):
                 first = True
@@ -178,8 +186,7 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
                     EngineConfig(method="dynamic_hypergraph")
                 )
 
-                samples = []
-                shifts = []
+                print("[DEBUG] CycleSpinningEngine created", flush=True)
 
                 # For each cycle (in both directions)
                 for row in range(0, num_rows, cycle_width):
@@ -235,6 +242,7 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
                             "spectral_tensor": spectral_shifted,
                             "wavelet_tensor": wavelet_shifted,
                         }
+
                         # Get the predicted clean image
                         sample = sample_fn(
                                 model,
@@ -243,43 +251,45 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
                                 model_kwargs=model_kwargs,
                             )
 
-                        samples.append(sample)
-                        shifts.append((row, col))
-
                         # Unspin the image and add to the averaged image
                         if (first):
                             pred_tensor = (1.0/N)*sample
 
-                            print("=" * 80)
-                            print("row:", row, "col:", col)
-                            print("sample:", sample.shape)
-                            print("pred_tensor:", pred_tensor.shape)
-
                             first = False
                         else:
-                            print("row:", row, "col:", col)
-                            print("sample:", sample.shape)
-                            print("pred_tensor:", pred_tensor.shape)
-
                             pred_tensor[:, :, :, num_rows-row:, num_cols-col:] += (1.0/N) * sample[:, :, :, :row, :col]
                             pred_tensor[:, :, :, :num_rows-row, :num_cols-col] += (1.0/N) * sample[:, :, :, row:, col:]
                             pred_tensor[:, :, :, :num_rows-row, num_cols-col:] += (1.0/N) * sample[:, :, :, row:, :col]
                             pred_tensor[:, :, :, num_rows-row:, :num_cols-col] += (1.0/N) * sample[:, :, :, :row, col:]
             else:
                 # Otherwise, get the predicted clean image as normal
+
                 pred_tensor = sample_fn(
                                 model,
                                 noisy_tensor.shape,
                                 clip_denoised=True,
                                 model_kwargs=model_kwargs,
                             )
-                
+
             # Find the elapsed time
             elapsed_time = time.perf_counter() - batch_start
             net_time += elapsed_time
 
+            itr_indexes = list(range(pred_tensor.shape[0]))
+
             pred_tensor = pred_tensor[itr_indexes]
+
             iterations = pred_tensor.shape[0]
+            itr_indexes = list(range(iterations))
+
+            # Allocate metric arrays once, using the actual number of iterations.
+            if all_tensor_psnr is None:
+                metric_shape = (len(loader) * batch_size, iterations)
+
+                all_tensor_psnr = np.zeros(metric_shape, dtype=np.float32)
+                all_tensor_ssim = np.zeros(metric_shape, dtype=np.float32)
+                all_tensor_vifp = np.zeros(metric_shape, dtype=np.float32)
+                all_tensor_lpips = np.zeros(metric_shape, dtype=np.float32)
 
             pred_image = ((pred_tensor + 1.0)* 127.5).clamp(0, 255.0)
             pred_image = torch.round(torch.mean(pred_image, dim=2)) / 255.0
@@ -313,7 +323,10 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
             elif sample_to_use == "SWEEP":
                 pred_image = torch.mean(pred_image[-8:], dim=0)
             else:
-                exit(1)
+                raise ValueError(
+                    f"Unknown sample_to_use='{sample_to_use}'. "
+                    "Expected one of {'LAST', 'MAX', 'SWEEP'}."
+                )
                 
             pred_image_np = pred_image.cpu().numpy()
             clean_image_np = clean_image.cpu().numpy()
@@ -323,9 +336,6 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
             img_vifp = [0.0]*batch_size
 
             for b in range(batch_size):
-
-                print("clean :", clean_image.min().item(), clean_image.max().item())
-                print("pred  :", pred_image.min().item(), pred_image.max().item())
 
                 img_psnr[b] = psnr(clean_image_np[b], pred_image_np[b])
                 img_ssim[b] = ssim(clean_image_np[b], pred_image_np[b], data_range=1)
@@ -403,6 +413,13 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
                 net_vifp += batch_vifp
 
             progress_bar.set_description(desc=f"[{'Test' if test else 'Validation'}] PSNR: {batch_psnr:5.2f}/{(net_psnr/(batch_idx+1)):5.2f}, SSIM: {batch_ssim:5.3f}/{(net_ssim/(batch_idx+1)):5.3f}")
+
+            del pred_tensor
+            del pred_image
+            del clean_image
+            del noisy_image
+
+            torch.cuda.empty_cache()
 
         progress_bar.close()
 

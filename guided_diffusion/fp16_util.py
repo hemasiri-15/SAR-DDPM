@@ -197,7 +197,7 @@ class MixedPrecisionTrainer:
 
         for name, p in self.model.named_parameters():
             if p.grad is not None:
-                if not torch.isfinite(p.grad).all():
+                if not th.isfinite(p.grad).all():
                     print("\n==============================")
                     print("NaN gradient in:", name)
                     print("grad mean:", p.grad.float().mean().item())

@@ -125,4 +125,19 @@ def create_argparser():
     return parser
 
 if __name__ == "__main__":
-    main()
+    import traceback
+    import sys
+
+    try:
+        args = create_argparser().parse_args()
+        print("[DEBUG] Parsed arguments successfully.", flush=True)
+
+        main()
+
+        print("[DEBUG] main() completed normally.", flush=True)
+
+    except Exception:
+        print("\n========== PYTHON EXCEPTION ==========", flush=True)
+        traceback.print_exc()
+        print("======================================\n", flush=True)
+        sys.exit(1)

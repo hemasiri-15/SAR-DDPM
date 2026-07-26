@@ -248,7 +248,11 @@ def compute_eigenvalues(
     lam1, lam2 : [B, 1, H, W] each
     """
     mu  = (J11 + J22) * 0.5
-    rho = ((((J11 - J22) * 0.5).pow(2) + J12.pow(2)).clamp(min=0.0)).sqrt()
+
+    eps = 1e-12
+    rho = torch.sqrt(
+        (((J11 - J22) * 0.5).pow(2) + J12.pow(2)).clamp(min=eps)
+    )
     lam1 = mu + rho
     lam2 = mu - rho
     return lam1, lam2
