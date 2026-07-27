@@ -25,7 +25,7 @@ def default_args(test=False):
             val_dir = "./Training_Data", #"../sen12/opt/val", #
             val_samples = 40,
             log_interval = 100,
-            save_interval = 1000,
+            save_interval = 100,
             in_channels = 3,
             batch_size = 8,
             seed = 123,
@@ -35,10 +35,10 @@ def default_args(test=False):
             resume_checkpoint = "",
             diffusion_steps = 1000,
             use_ddim = False,
-            timestep_respacing = "100", #"ddim100",
+            timestep_respacing = "", #"ddim100",
             learn_sigma = True,
             predict_xstart = False,
-            use_fp16 = True,
+            use_fp16 = False,
             noise_schedule = "linear",
         )
     return defaults

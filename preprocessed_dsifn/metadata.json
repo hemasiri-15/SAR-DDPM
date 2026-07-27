@@ -1,0 +1,20 @@
+{
+  "dataset": "dsifn",
+  "generated_at": "2026-07-27T06:15:03.413003+00:00",
+  "patch_size": 256,
+  "stride": 256,
+  "normalize_method": "percentile",
+  "workers": 4,
+  "splits": {
+    "default": {
+      "num_images": 1,
+      "num_patches": 4,
+      "num_errors": 0
+    }
+  },
+  "total_images": 1,
+  "total_patches": 4,
+  "total_errors": 0,
+  "elapsed_seconds": 0.207,
+  "images_per_second": 4.821
+}

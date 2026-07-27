@@ -568,14 +568,44 @@ class TrainLoop:
             state_dict = self.mp_trainer.master_params_to_state_dict(params)
             if (not dist.is_initialized()) or dist.get_rank() == 0:
                 if not rate:
-                    filename = f"model_{savetype}.pt"
+                    if latest:
+                        filename = f"model_{self.step + self.resume_step}.pt"
+                    else:
+                        filename = f"model_{savetype}.pt"
                 else:
-                    filename = f"ema_{savetype}_{rate}.pt"
+                    if latest:
+                        filename = f"ema_{self.step + self.resume_step}_{rate}.pt"
+                    else:
+                        filename = f"ema_{savetype}_{rate}.pt"
 
                 with bf.BlobFile(bf.join(logger_dir, filename), "wb") as f:
                     torch.save(state_dict, f)
 
         save_checkpoint(0, self.mp_trainer.master_params)
+
+        # Save EMA models
+        for rate, params in zip(self.ema_rate, self.ema_params):
+            save_checkpoint(rate, params)
+
+        # Save optimizer
+        if (not dist.is_initialized()) or dist.get_rank() == 0:
+            with bf.BlobFile(
+                bf.join(logger_dir, "opt_latest.pt"),
+                "wb",
+            ) as f:
+                torch.save(self.opt.state_dict(), f)
+
+        if dist.is_initialized():
+            dist.barrier()
+
+        # Save optimizer state
+        if (not dist.is_initialized()) or dist.get_rank() == 0:
+            with bf.BlobFile(
+                bf.join(logger_dir, "opt_latest.pt"),
+                "wb",
+            ) as f:
+                torch.save(self.opt.state_dict(), f)
+
         for rate, params in zip(self.ema_rate, self.ema_params):
             save_checkpoint(rate, params)
 
