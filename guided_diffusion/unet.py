@@ -866,10 +866,14 @@ class UNetModel(nn.Module):
             # ==========================================================
             # Research Metric
             # ==========================================================
-            self.last_condition_weights = {
-                name: weights[:, i].detach().mean().item()
-                for i, name in enumerate(condition_names)
-            }
+            if not torch.compiler.is_compiling():
+
+                stats = {}
+
+                for i, name in enumerate(condition_names):
+                    stats[name] = weights[:, i].detach().mean().item()
+
+                self.last_condition_weights = stats
 
             fused_embedding = emb.new_zeros(emb.shape)
 

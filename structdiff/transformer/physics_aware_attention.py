@@ -156,7 +156,7 @@ class PhysicsAwareAttention(nn.Module):
 
         self.dropout_layer = nn.Dropout(dropout)
 
-        self.use_sdpa = False  # Enable PyTorch SDPA / Flash Attention backend
+        self.use_sdpa = True  # Enable PyTorch SDPA / Flash Attention backend
 
         # ==========================================================
         # Research metrics
@@ -315,70 +315,95 @@ class PhysicsAwareAttention(nn.Module):
         # logits
         # ----------------------------
 
-        scores = torch.matmul(
-            q.float(),
-            k.transpose(-2, -1).float()
-        )
+        if self.use_sdpa and use_sdpa:
 
-        scores /= math.sqrt(Hd)
+            attn_mask = None
 
-        if physics_attention_bias is not None:
+            if physics_attention_bias is not None:
+                attn_mask = physics_attention_bias.unsqueeze(1).to(q.dtype)
 
-            scores = scores + physics_attention_bias.unsqueeze(1).float()
+            attn_out = F.scaled_dot_product_attention(
+                q,
+                k,
+                v,
+                attn_mask=attn_mask,
+                dropout_p=self.dropout if self.training else 0.0,
+                is_causal=False,
+            )
 
-        if torch.isnan(scores).any():
-            raise RuntimeError("NaN in scores")
+            attn_weights = None
 
-        weights = F.softmax(scores, dim=-1)
+        else:
 
-        if torch.isnan(weights).any():
-            raise RuntimeError("NaN after softmax")
+            scores = torch.matmul(
+                q.float(),
+                k.transpose(-2, -1).float()
+            )
 
-        # Convert to same dtype as V BEFORE matmul
-        weights = weights.to(v.dtype)
+            scores /= math.sqrt(Hd)
 
-        # ==========================================================
-        # Research Metric: Attention Shift
-        # Measures how much the physics prior changes the attention
-        # distribution compared to standard self-attention.
-        # ==========================================================
-        if (
-            self.track_attention_shift
-            and physics_attention_bias is not None
-        ):
-            with torch.no_grad():
+            if physics_attention_bias is not None:
 
-                scores_no_bias = (
-                    torch.matmul(
-                        q.float(),
-                        k.transpose(-2, -1).float()
-                    ) / math.sqrt(Hd)
-                )
+                scores = scores + physics_attention_bias.unsqueeze(1).float()
 
-                weights_no_bias = F.softmax(
-                    scores_no_bias,
-                    dim=-1,
-                )
+            if torch.isnan(scores).any():
+                raise RuntimeError("NaN in scores")
 
-                attention_shift = (
-                    weights.float() - weights_no_bias.float()
-                ).abs().mean()
+            weights = F.softmax(scores, dim=-1)
 
-                self.last_attention_shift = attention_shift.detach()
+            if torch.isnan(weights).any():
+                raise RuntimeError("NaN after softmax")
 
-        weights = self.dropout_layer(weights)
+            # Convert to same dtype as V BEFORE matmul
+            weights = weights.to(v.dtype)
 
-        weights = weights.to(v.dtype)
+            # ==========================================================
+            # Research Metric: Attention Shift
+            # Measures how much the physics prior changes the attention
+            # distribution compared to standard self-attention.
+            # ==========================================================
+            if (
+                self.track_attention_shift
+                and physics_attention_bias is not None
+            ):
+                with torch.no_grad():
 
-        # ----------------------------
-        # attention output
-        # ----------------------------
+                    scores_no_bias = (
+                        torch.matmul(
+                            q.float(),
+                            k.transpose(-2, -1).float()
+                        ) / math.sqrt(Hd)
+                    )
 
-        attn_out = torch.matmul(weights, v)
+                    weights_no_bias = F.softmax(
+                        scores_no_bias,
+                        dim=-1,
+                    )
 
-        if physics_attention_bias is not None:
-            with torch.no_grad():
-                attn_no_bias = torch.matmul(weights_no_bias.to(v.dtype), v)
+                    attention_shift = (
+                        weights.float() - weights_no_bias.float()
+                    ).abs().mean()
+
+                    self.last_attention_shift = attention_shift.detach()
+
+            weights = self.dropout_layer(weights)
+
+            weights = weights.to(v.dtype)
+
+            # ----------------------------
+            # attention output
+            # ----------------------------
+
+            attn_out = torch.matmul(weights, v)
+
+            if ( 
+                self.track_attention_shift
+                and physics_attention_bias is not None
+            ):
+                with torch.no_grad():
+                    attn_no_bias = torch.matmul(weights_no_bias.to(v.dtype), v)
+
+            attn_weights = weights if return_attention else None
 
         attn_out = (
             attn_out.transpose(1, 2)
@@ -387,8 +412,6 @@ class PhysicsAwareAttention(nn.Module):
         )
 
         attn_out = self.out_proj(attn_out)
-
-        attn_weights = weights if return_attention else None
 
         if return_attention:
             return attn_out, attn_weights

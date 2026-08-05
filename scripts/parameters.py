@@ -40,5 +40,6 @@ def default_args(test=False):
             predict_xstart = False,
             use_fp16 = False,
             noise_schedule = "linear",
+            compile_model=False,
         )
     return defaults

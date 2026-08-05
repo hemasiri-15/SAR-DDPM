@@ -252,10 +252,11 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
 
                             first = False
                         else:
-                            pred_tensor[:, :, :, num_rows-row:, num_cols-col:] += (1.0/N) * sample[:, :, :, :row, :col]
-                            pred_tensor[:, :, :, :num_rows-row, :num_cols-col] += (1.0/N) * sample[:, :, :, row:, col:]
-                            pred_tensor[:, :, :, :num_rows-row, num_cols-col:] += (1.0/N) * sample[:, :, :, row:, :col]
-                            pred_tensor[:, :, :, num_rows-row:, :num_cols-col] += (1.0/N) * sample[:, :, :, :row, col:]
+                            pred_tensor[:, :, num_rows-row:, num_cols-col:] += (1.0/N) * sample[:, :, :row, :col]
+                            pred_tensor[:, :, :num_rows-row, :num_cols-col] += (1.0/N) * sample[:, :, row:, col:]
+                            pred_tensor[:, :, :num_rows-row, num_cols-col:] += (1.0/N) * sample[:, :, row:, :col]
+                            pred_tensor[:, :, num_rows-row:, :num_cols-col] += (1.0/N) * sample[:, :, :row, col:]
+
             else:
                 # Otherwise, get the predicted clean image as normal
 
@@ -270,12 +271,19 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
             elapsed_time = time.perf_counter() - batch_start
             net_time += elapsed_time
 
-            itr_indexes = list(range(pred_tensor.shape[0]))
+            # -------------------------------------------------
+            # Normalize DDIM/DDPM outputs to [T, B, C, H, W]
+            # -------------------------------------------------
+            if use_ddim:
+                # DDIM returns [B, C, H, W]
+                pred_tensor = pred_tensor.unsqueeze(0)
+                iterations = 1
+            else:
+                # DDPM returns [T, B, C, H, W]
+                iterations = pred_tensor.shape[0]
 
-            pred_tensor = pred_tensor[itr_indexes]
-
-            iterations = pred_tensor.shape[0]
             itr_indexes = list(range(iterations))
+            pred_tensor = pred_tensor[itr_indexes]
 
             # Allocate metric arrays once, using the actual number of iterations.
             if all_tensor_psnr is None:
@@ -291,9 +299,29 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
             pred_image = pred_image.contiguous()
 
             for b in range(batch_size):
-                all_tensor_lpips[batch_idx * batch_size + b] = compute_lpips_batch(clean_image[b].repeat(iterations,1,1) * 2.0 - 1.0, pred_image[:,b] * 2.0 - 1.0)
-                
-            batch_mse = F.mse_loss(clean_image, pred_image[-1], reduction='mean').item()
+
+                # LPIPS should be computed on RGB tensors
+                all_tensor_lpips[batch_idx * batch_size + b] = compute_lpips_batch(
+                    clean_tensor[b].unsqueeze(0) * 2.0 - 1.0,
+                    pred_tensor[b].unsqueeze(0) * 2.0 - 1.0,
+                )
+
+            pred_image = ((pred_tensor + 1.0) * 127.5).clamp(0, 255.0)
+            pred_image = torch.round(torch.mean(pred_image, dim=1)) / 255.0
+            pred_image = pred_image.contiguous()
+
+            if pred_image.dim() == 3:
+                batch_mse = F.mse_loss(
+                    clean_image,
+                    pred_image,
+                    reduction="mean",
+                ).item()
+            else:
+                batch_mse = F.mse_loss(
+                    clean_image,
+                    pred_image[-1],
+                    reduction="mean",
+                ).item()
 
             pred_image_np = pred_image.cpu().numpy()
             clean_image_np = clean_image.cpu().numpy()
@@ -302,26 +330,48 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
             max_psnr = [0.0] * batch_size
             for b in range(batch_size):
                 idx = batch_idx * batch_size + b
-                for i in range(iterations):
-                    all_tensor_psnr[idx,i] = psnr(clean_image_np[b], pred_image_np[i,b])
-                    all_tensor_ssim[idx,i] = ssim(clean_image_np[b], pred_image_np[i,b], data_range=1)
-                    # if test:
-                    #     all_tensor_vifp[idx,i] = vifp(clean_image_np[b], pred_image[i,b])
+                # ==========================================================
+                # DDIM produces a single prediction.
+                # DDPM produces multiple predictions.
+                # ==========================================================
 
-                max_psnr_index[b] = np.argmax(all_tensor_psnr[idx,:])
-                max_psnr[b] = all_tensor_psnr[idx, max_psnr_index[b]]
+                if pred_image.dim() == 3:
+
+                    all_tensor_psnr[idx, 0] = psnr(
+                        clean_image_np[b],
+                        pred_image_np[b],
+                    )
+
+                    all_tensor_ssim[idx, 0] = ssim(
+                        clean_image_np[b],
+                        pred_image_np[b],
+                        data_range=1,
+                    )
+
+                    max_psnr_index[b] = 0
+                    max_psnr[b] = all_tensor_psnr[idx, 0]
+
+                else:
+                    raise RuntimeError(
+                        f"Unexpected pred_image shape: {tuple(pred_image.shape)}"
+                    )
             
-            if sample_to_use == "LAST":
-                pred_image = pred_image[-1]
-            elif sample_to_use == "MAX":
-                pred_image = pred_image[max_psnr_index, range(batch_size)]
-            elif sample_to_use == "SWEEP":
-                pred_image = torch.mean(pred_image[-8:], dim=0)
+            if pred_image.dim() == 3:
+                # DDIM already returns the final image
+                pass
+
             else:
-                raise ValueError(
-                    f"Unknown sample_to_use='{sample_to_use}'. "
-                    "Expected one of {'LAST', 'MAX', 'SWEEP'}."
-                )
+                if sample_to_use == "LAST":
+                    pred_image = pred_image[-1]
+                elif sample_to_use == "MAX":
+                    pred_image = pred_image[max_psnr_index, range(batch_size)]
+                elif sample_to_use == "SWEEP":
+                    pred_image = torch.mean(pred_image[-8:], dim=0)
+                else:
+                    raise ValueError(
+                        f"Unknown sample_to_use='{sample_to_use}'. "
+                        "Expected one of {'LAST', 'MAX', 'SWEEP'}."
+                    )
                 
             pred_image_np = pred_image.cpu().numpy()
             clean_image_np = clean_image.cpu().numpy()
@@ -335,7 +385,6 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
                 img_psnr[b] = psnr(clean_image_np[b], pred_image_np[b])
                 img_ssim[b] = ssim(clean_image_np[b], pred_image_np[b], data_range=1)
                 # img_vifp[b] = vifp(clean_image_np[b], pred_image_np[b])
-            img_lpips = compute_lpips_batch(clean_image * 2.0 - 1.0, pred_image * 2.0 - 1.0)
             
             noisy_image = ((noisy_tensor + 1.0)* 127.5).clamp(0, 255.0)
             noisy_image = torch.round(torch.mean(noisy_image, dim=1)) / 255.0
@@ -514,21 +563,36 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
 
 
 def compute_lpips_batch(sr_tensors, gt_tensors):
-    # Must be pytorch tensors on the GPU between [-1, 1]
+    """
+    Compute LPIPS for a batch.
 
-    # Ensure the input tensors are of the shape (N, C, H, W) and have 3 channels
-    sr_tensors = sr_tensors.unsqueeze(1).repeat(1, 3, 1, 1)
-    gt_tensors = gt_tensors.unsqueeze(1).repeat(1, 3, 1, 1)
-    
-    # Compute LPIPS
+    Accepts either:
+        [N, H, W]
+    or
+        [N, 3, H, W]
+    """
+
+    # Convert grayscale -> RGB if needed
+    if sr_tensors.dim() == 3:
+        sr_tensors = sr_tensors.unsqueeze(1).repeat(1, 3, 1, 1)
+
+    if gt_tensors.dim() == 3:
+        gt_tensors = gt_tensors.unsqueeze(1).repeat(1, 3, 1, 1)
+
+    # Safety checks
+    assert sr_tensors.dim() == 4, sr_tensors.shape
+    assert gt_tensors.dim() == 4, gt_tensors.shape
+    assert sr_tensors.shape[1] == 3, sr_tensors.shape
+    assert gt_tensors.shape[1] == 3, gt_tensors.shape
+
     lpips_values = lpips_model(sr_tensors, gt_tensors)
-    
-    # Return the mean LPIPS value across the batch
+
     lpips_values = lpips_values.squeeze().tolist()
+
     if not isinstance(lpips_values, list):
         lpips_values = [lpips_values]
-    return lpips_values
 
+    return lpips_values
 
 def save_test_images(img_name, *arrays):
     # Convert NumPy arrays to PIL images

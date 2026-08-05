@@ -8,6 +8,7 @@ import datetime
 from torch.utils.data import DataLoader
 import blobfile as bf
 import torch
+import torch.nn.attention as attention
 
 # ==========================================================
 # NVIDIA Tensor Core Optimization
@@ -39,6 +40,7 @@ def main():
         set_seed(args.seed)
 
     dist_util.setup_dist()
+
     log_folder = bf.join(
         args.log_path,
         datetime.datetime.now().strftime(f"{args.train_dir.split('/')[1]}_%Y-%m-%d-%H-%M-%S"),
@@ -57,13 +59,13 @@ def main():
     )
     model.to(dist_util.dev())
 
-    if args.compile:
-        logger.log("Compiling model...")
+    if args.compile_model:
+        logger.log("Model compilation disabled.")
 
-        model = torch.compile(
-            model,
-            mode="reduce-overhead",
-        )
+        #model = torch.compile(
+        #    model,
+        #    mode="default",
+        #)
 
     schedule_sampler = create_named_schedule_sampler(args.schedule_sampler, diffusion)
 
