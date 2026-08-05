@@ -1,4 +1,4 @@
-w"""
+"""
 Physics-aware multi-head self-attention wrapper.
 
 This module implements ``PhysicsAwareAttention``: a self-attention layer
