@@ -64,6 +64,7 @@ def main():
             model,
             mode="reduce-overhead",
         )
+
     schedule_sampler = create_named_schedule_sampler(args.schedule_sampler, diffusion)
 
     logger.log("Creating data loaders...")

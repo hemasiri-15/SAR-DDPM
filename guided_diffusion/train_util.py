@@ -561,6 +561,7 @@ class TrainLoop:
                     )
 
     def save(self, latest=False, max=False):
+
         logger_dir = logger.get_dir()
         savetype = "latest" if latest else ("max" if max else "best")
 

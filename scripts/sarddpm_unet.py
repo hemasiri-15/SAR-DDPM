@@ -481,6 +481,10 @@ def evaluate(loader, device, images_dir, unet_model, batch_size, cycle_spinning=
                 img_psnr[b] = psnr(clean_image_np[b], pred_image_np[b])
                 img_ssim[b] = ssim(clean_image_np[b], pred_image_np[b], data_range=1)
                 # img_vifp[b] = vifp(clean_image_np[b], pred_image_np[b])
+
+            print("clean:", clean_image.shape, flush=True)
+            print("pred :", pred_image.shape, flush=True)
+
             img_lpips = compute_lpips_batch(clean_image * 2.0 - 1.0, pred_image * 2.0 - 1.0)
             
             noisy_image = ((noisy_tensor + 1.0)* 127.5).clamp(0, 255.0)
@@ -556,10 +560,16 @@ def evaluate(loader, device, images_dir, unet_model, batch_size, cycle_spinning=
 def compute_lpips_batch(sr_tensors, gt_tensors):
     # Must be pytorch tensors on the GPU between [-1, 1]
 
+    print("LPIPS sr before :", sr_tensors.shape, flush=True)
+    print("LPIPS gt before :", gt_tensors.shape, flush=True)
+
     # Ensure the input tensors are of the shape (N, C, H, W) and have 3 channels
     sr_tensors = sr_tensors.unsqueeze(1).repeat(1, 3, 1, 1)
     gt_tensors = gt_tensors.unsqueeze(1).repeat(1, 3, 1, 1)
     
+    print("LPIPS sr after  :", sr_tensors.shape, flush=True)
+    print("LPIPS gt after  :", gt_tensors.shape, flush=True)
+
     # Compute LPIPS
     lpips_values = lpips_model(sr_tensors, gt_tensors)
     
