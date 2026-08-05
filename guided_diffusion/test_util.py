@@ -59,8 +59,6 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
                 f"Unknown sample_to_use='{sample_to_use}'. "
                 "Expected one of {'LAST', 'MAX', 'SWEEP'}."
             )
-    
-    print("[DEBUG] Entered evaluate()", flush=True)
 
     model.eval()
 
@@ -166,7 +164,6 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
             batch_size = clean_tensor.shape[0]
 
             batch_start = time.perf_counter()
-            print("[DEBUG] Preparing cycle spinning", flush=True)
 
             if (cycle_spinning):
                 first = True
@@ -185,8 +182,6 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
                 engine = CycleSpinningEngine(
                     EngineConfig(method="dynamic_hypergraph")
                 )
-
-                print("[DEBUG] CycleSpinningEngine created", flush=True)
 
                 # For each cycle (in both directions)
                 for row in range(0, num_rows, cycle_width):

@@ -1,4 +1,4 @@
-"""
+w"""
 Physics-aware multi-head self-attention wrapper.
 
 This module implements ``PhysicsAwareAttention``: a self-attention layer
@@ -156,6 +156,27 @@ class PhysicsAwareAttention(nn.Module):
 
         self.dropout_layer = nn.Dropout(dropout)
 
+        self.use_sdpa = False  # Enable PyTorch SDPA / Flash Attention backend
+
+        # ==========================================================
+        # Research metrics
+        # ==========================================================
+        self.track_attention_shift = False
+        self.last_attention_shift = None
+
+    def enable_sdpa(self, enabled: bool = True):
+        """
+        Enable or disable the SDPA backend.
+
+        Parameters
+        ----------
+        enabled : bool
+            If True, the module will use the SDPA implementation
+            (once implemented). Otherwise it falls back to the
+            manual attention implementation.
+        """
+        self.use_sdpa = enabled
+
     def _expand_bias_to_attn_mask(
         self, physics_attention_bias: torch.Tensor, batch_size: int, seq_len: int
     ) -> torch.Tensor:
@@ -266,6 +287,17 @@ class PhysicsAwareAttention(nn.Module):
         H = self.num_heads
         Hd = self.head_dim
 
+        # ==========================================================
+        # Fast SDPA path:
+        # Used during normal training/inference.
+        # Falls back to the manual implementation when attention
+        # weights are explicitly requested.
+        # ==========================================================
+        use_sdpa = (
+            not return_attention
+            and hasattr(F, "scaled_dot_product_attention")
+        )
+
         # ----------------------------
         # Q K V
         # ----------------------------
@@ -305,13 +337,17 @@ class PhysicsAwareAttention(nn.Module):
         # Convert to same dtype as V BEFORE matmul
         weights = weights.to(v.dtype)
 
-        attn_out = torch.matmul(weights, v)
-
-        if torch.isnan(attn_out).any():
-            raise RuntimeError("NaN in attention output")
-
-        if physics_attention_bias is not None:
+        # ==========================================================
+        # Research Metric: Attention Shift
+        # Measures how much the physics prior changes the attention
+        # distribution compared to standard self-attention.
+        # ==========================================================
+        if (
+            self.track_attention_shift
+            and physics_attention_bias is not None
+        ):
             with torch.no_grad():
+
                 scores_no_bias = (
                     torch.matmul(
                         q.float(),
@@ -319,9 +355,16 @@ class PhysicsAwareAttention(nn.Module):
                     ) / math.sqrt(Hd)
                 )
 
-                weights_no_bias = F.softmax(scores_no_bias, dim=-1)
+                weights_no_bias = F.softmax(
+                    scores_no_bias,
+                    dim=-1,
+                )
 
-                diff = (weights - weights_no_bias).abs().mean()
+                attention_shift = (
+                    weights.float() - weights_no_bias.float()
+                ).abs().mean()
+
+                self.last_attention_shift = attention_shift.detach()
 
         weights = self.dropout_layer(weights)
 
@@ -351,6 +394,11 @@ class PhysicsAwareAttention(nn.Module):
             return attn_out, attn_weights
         return attn_out
 
+    def get_attention_shift(self):
+        """
+        Return the latest physics attention shift metric.
+        """
+        return self.last_attention_shift
 
 if __name__ == "__main__":
     attn = PhysicsAwareAttention(embed_dim=192, num_heads=4)

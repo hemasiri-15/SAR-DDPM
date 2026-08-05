@@ -3,9 +3,20 @@ Train SAR-DDPM model.
 """
 
 import argparse
+import os
 import datetime
 from torch.utils.data import DataLoader
 import blobfile as bf
+import torch
+
+# ==========================================================
+# NVIDIA Tensor Core Optimization
+# ==========================================================
+torch.set_float32_matmul_precision("high")
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
+
+import torch.distributed as dist
 
 from guided_diffusion import dist_util, logger
 from guided_diffusion.resample import create_named_schedule_sampler
@@ -45,6 +56,14 @@ def main():
         **args_to_dict(args, sr_model_and_diffusion_defaults().keys())
     )
     model.to(dist_util.dev())
+
+    if args.compile:
+        logger.log("Compiling model...")
+
+        model = torch.compile(
+            model,
+            mode="reduce-overhead",
+        )
     schedule_sampler = create_named_schedule_sampler(args.schedule_sampler, diffusion)
 
     logger.log("Creating data loaders...")
@@ -53,10 +72,20 @@ def main():
 
     from torch.utils.data import Subset
 
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=1, drop_last=True)
+    loader_kwargs = {}
+
+    if args.num_workers > 0:
+        loader_kwargs.update(
+            dict(
+                persistent_workers=True,
+                prefetch_factor=2,
+            )
+        )
+
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, pin_memory=True, drop_last=True, **loader_kwargs)
     val_dataset = WaveletDataset(args.val_dir, train=False, num_channels=args.in_channels, crop_size=(args.large_size, args.large_size), length=((args.val_samples//args.batch_size)*args.batch_size), seed=args.seed)
 
-    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=1)
+    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=True, **loader_kwargs)
 
     logger.log("Training...")
     TrainLoop(
@@ -79,6 +108,7 @@ def main():
         lr_anneal_steps=args.lr_anneal_steps,
         use_ddim=args.use_ddim,
         learn_sigma=args.learn_sigma,
+        profile=args.profile,
     ).run_loop()
 
 
@@ -94,6 +124,7 @@ def create_argparser():
         lr_anneal_steps = 0,
         weight_decay = 0.0,
         seed = None,
+        num_workers=4,
 
         # model
         large_size = 256,
@@ -110,7 +141,10 @@ def create_argparser():
         use_scale_shift_norm = True,
         attention_resolutions = "32,16,8",
         class_cond = False,
-        
+        compile_model=True,
+        profile=False,
+        benchmark=False,
+
         # diffusion
         timestep_respacing = "ddim100",
         diffusion_steps = 1000,
@@ -130,14 +164,10 @@ if __name__ == "__main__":
 
     try:
         args = create_argparser().parse_args()
-        print("[DEBUG] Parsed arguments successfully.", flush=True)
 
         main()
-
-        print("[DEBUG] main() completed normally.", flush=True)
 
     except Exception:
         print("\n========== PYTHON EXCEPTION ==========", flush=True)
         traceback.print_exc()
-        print("======================================\n", flush=True)
         sys.exit(1)

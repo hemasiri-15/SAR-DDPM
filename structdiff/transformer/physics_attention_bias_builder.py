@@ -171,6 +171,11 @@ class PhysicsAttentionBiasBuilder(nn.Module):
         self.physics_relation_matrix = PhysicsRelationMatrix()
         self.physics_bias_fusion = PhysicsBiasFusion()
 
+        # ==========================================================
+        # Research Metrics
+        # ==========================================================
+        self.last_orientation_relation = None
+
     def forward(
         self,
         struct_tensor: torch.Tensor,
@@ -212,6 +217,11 @@ class PhysicsAttentionBiasBuilder(nn.Module):
             orientation, coherence
         )
 
+        # ==========================================================
+        # Research Metric
+        # ==========================================================
+        self.last_orientation_relation = orientation_relation.detach()
+
         # 3. orientation_relation (+ any optional relation matrices) ->
         #    fused, gated physics attention bias.
         physics_attention_bias = self.physics_bias_fusion(
@@ -220,30 +230,6 @@ class PhysicsAttentionBiasBuilder(nn.Module):
             spectral_relation=spectral_relation,
             confidence_relation=confidence_relation,
         )
-
-        print("\n===== Builder =====")
-
-        print(
-             "orientation_relation:",
-             f"mean={orientation_relation.mean().item():.6f}",
-             f"std={orientation_relation.std().item():.6f}",
-             f"min={orientation_relation.min().item():.6f}",
-             f"max={orientation_relation.max().item():.6f}",
-        )
-
-        print(
-             "physics_bias:",
-             f"mean={physics_attention_bias.mean().item():.6f}",
-             f"std={physics_attention_bias.std().item():.6f}",
-             f"min={physics_attention_bias.min().item():.6f}",
-             f"max={physics_attention_bias.max().item():.6f}",
-        )
-
-        print("===================")
-
-        print("orientation_relation:", orientation_relation.dtype)
-        print("physics_bias:", physics_attention_bias.dtype)
-        print("===================\n")
 
         return physics_attention_bias
 
@@ -266,6 +252,22 @@ class PhysicsAttentionBiasBuilder(nn.Module):
                 f"{tuple(struct_tensor.shape)}."
             )
 
+    def get_gate_values(self):
+        """
+        Returns the latest gate values from PhysicsBiasFusion.
+        """
+        return self.physics_bias_fusion.get_gate_values()
+
+    def get_physics_metrics(self):
+        """
+        Returns all available physics-related metrics collected during the
+        most recent forward pass.
+        """
+        return {
+            "gate_values": self.physics_bias_fusion.get_gate_values(),
+            "bias_norm": self.physics_bias_fusion.get_bias_norm(),
+            "orientation_relation": self.last_orientation_relation,
+        }
 
 if __name__ == "__main__":
     struct_tensor = torch.randn(2, 3, 32, 32)
@@ -281,3 +283,8 @@ if __name__ == "__main__":
     )
 
     print("PhysicsAttentionBiasBuilder smoke test passed.")
+def get_gate_values(self):
+    """
+    Returns the latest gate values from PhysicsBiasFusion.
+    """
+    return self.physics_bias_fusion.get_gate_values()

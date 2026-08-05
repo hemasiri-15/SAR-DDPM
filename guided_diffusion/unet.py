@@ -451,6 +451,19 @@ class UNetModel(nn.Module):
                                     increased efficiency.
     """
 
+    def get_attention_shift(self):
+        """
+        Returns the latest physics attention shift metric.
+        """
+
+        for module in self.modules():
+            if hasattr(module, "get_attention_shift"):
+                shift = module.get_attention_shift()
+                if shift is not None:
+                    return shift
+
+        return None
+
     def __init__(
         self,
         image_size,
@@ -530,7 +543,16 @@ class UNetModel(nn.Module):
             nn.Linear(time_embed_dim // 2, 1)
         )
 
+        # ======================================================
+        # Research Metrics
+        # ======================================================
+        self.last_condition_weights = None
+
         self.physics_attention_bias_builder = PhysicsAttentionBiasBuilder()
+
+        for module in self.modules():
+            if module.__class__.__name__ == "PhysicsAwareAttention":
+                module.track_attention_shift = True
 
         if self.num_classes is not None:
             self.label_emb = nn.Embedding(num_classes, time_embed_dim)
@@ -702,6 +724,62 @@ class UNetModel(nn.Module):
         self.middle_block.apply(convert_module_to_f32)
         self.output_blocks.apply(convert_module_to_f32)
 
+    def get_condition_metrics(self):
+        """
+        Returns the latest adaptive condition-fusion weights.
+        """
+        return self.last_condition_weights
+
+    def get_physics_metrics(self):
+        """
+        Collect all physics-related metrics generated during the latest
+        forward pass.
+
+        Returns
+        -------
+        dict
+            Dictionary containing research metrics from the physics
+            conditioning pipeline.
+        """
+
+        metrics = {}
+
+        # ------------------------------------------------------
+        # Metrics from PhysicsAttentionBiasBuilder
+        # ------------------------------------------------------
+        if hasattr(self, "physics_attention_bias_builder"):
+
+            builder_metrics = (
+                self.physics_attention_bias_builder.get_physics_metrics()
+            )
+
+            if builder_metrics is not None:
+                metrics.update(builder_metrics)
+
+        # ------------------------------------------------------
+        # Metrics from PhysicsTransformerBlock
+        # ------------------------------------------------------
+        for module in self.modules():
+
+            if module.__class__.__name__ == "PhysicsTransformerBlock":
+
+                attention_shift = module.get_attention_shift()
+
+                if attention_shift is not None:
+                    metrics["attention_shift"] = attention_shift
+
+                break
+
+        # ------------------------------------------------------
+        # Metrics from Adaptive Condition Fusion
+        # ------------------------------------------------------
+        condition_metrics = self.get_condition_metrics()
+
+        if condition_metrics is not None:
+            metrics["condition_weights"] = condition_metrics
+
+        return metrics
+
     def forward(
         self,
         x,
@@ -724,7 +802,6 @@ class UNetModel(nn.Module):
         emb = self.time_embed(
             timestep_embedding(timesteps, self.model_channels)
         )
-        time_emb = emb.detach()
 
         emb = emb.to(self.dtype)
 
@@ -786,6 +863,14 @@ class UNetModel(nn.Module):
 
             weights = torch.softmax(scores, dim=1).to(self.dtype)
 
+            # ==========================================================
+            # Research Metric
+            # ==========================================================
+            self.last_condition_weights = {
+                name: weights[:, i].detach().mean().item()
+                for i, name in enumerate(condition_names)
+            }
+
             fused_embedding = emb.new_zeros(emb.shape)
 
             for i, e in enumerate(condition_embeddings):
@@ -793,104 +878,6 @@ class UNetModel(nn.Module):
                 fused_embedding += weights[:, i:i+1] * e
 
             emb = emb + fused_embedding
-
-        if (self.training
-            and len(condition_embeddings) > 0
-            and not hasattr(self, "_condition_gate_printed")
-        ):
-
-            self._condition_gate_printed = True
-
-            print("\n======= Adaptive Condition Fusion =======")
-
-            mean_weights = weights.mean(dim=0).detach().cpu()
-
-            for name, w in zip(condition_names, mean_weights):
-                print(f"{name:10s}: {w.item():.4f}")
-
-        if look_emb is not None:
-            print("look_emb    :", look_emb.dtype)
-
-        if struct_emb is not None:
-            print("struct_emb  :", struct_emb.dtype)
-
-        if ms_struct_emb is not None:
-            print("ms_struct   :", ms_struct_emb.dtype)
-
-        if spectral_emb is not None:
-            print("spectral    :", spectral_emb.dtype)
-
-        if wavelet_emb is not None:
-            print("wavelet     :", wavelet_emb.dtype)
-
-        if (
-            look_num is not None
-            and not hasattr(self, "_embedding_stats_printed")
-        ):
-            self._embedding_stats_printed = True
-
-            print("\n========== EMBEDDING AUDIT ==========")
-
-            def stats(name, x):
-                print(
-                    f"{name:15s}"
-                    f" mean={x.mean().item():.4f}"
-                    f" std={x.std().item():.4f}"
-                    f" max={x.abs().max().item():.4f}"
-                    f" nan={th.isnan(x).any().item()}"
-                )
-
-            stats("Time", time_emb)
-
-            if look_emb is not None:
-                stats("Look", look_emb)
-
-            if ms_struct_emb is not None:
-                stats("MS Struct", ms_struct_emb)
-
-            if spectral_emb is not None:
-                stats("Spectral", spectral_emb)
-
-            if wavelet_emb is not None:
-                stats("Wavelet", wavelet_emb)
-
-            print("===============================\n")
-
-        if not hasattr(self, "_embedding_stats_printed"):
-
-            def stats(name, x):
-                if x is None:
-                    return
-                x = x.float()
-                print(
-                    f"{name:12s}"
-                    f" mean={x.mean():.5f}"
-                    f" std={x.std():.5f}"
-                    f" max={x.abs().max():.5f}"
-                    f" nan={torch.isnan(x).any().item()}"
-                )
-
-            print("\n========== EMBEDDING AUDIT ==========")
-            stats("Time", time_emb)
-
-            if look_emb is not None:
-                stats("Look", look_emb)
-
-            if struct_emb is not None:
-                stats("Struct", struct_emb)
-
-            if ms_struct_emb is not None:
-                stats("MS Struct", ms_struct_emb)
-
-            if spectral_emb is not None:
-                stats("Spectral", spectral_emb)
-
-            if wavelet_emb is not None:
-                stats("Wavelet", wavelet_emb)
-
-            print("=====================================\n")
-
-            self._embedding_stats_printed = True
 
         h = x.type(self.dtype)
         for module in self.input_blocks:
@@ -911,52 +898,18 @@ class UNetModel(nn.Module):
                 struct_tensor_at_bottleneck
             )
 
-            if (
-                physics_attention_bias is not None
-                and not hasattr(self, "_physics_stats_printed")
-            ):
-                x = physics_attention_bias.float()
-
-                print("\n===== Physics Bias =====")
-                print("shape :", physics_attention_bias.shape)
-                print("dtype :", physics_attention_bias.dtype)
-                print("min   :", physics_attention_bias.min().item())
-                print("max   :", physics_attention_bias.max().item())
-                print("mean  :", physics_attention_bias.mean().item())
-                print("========================")
-
-                self._physics_stats_printed = True
-
         if torch.isnan(h).any():
             raise RuntimeError("NaN in bottleneck features")
 
         if not torch.isfinite(h).all():
             raise RuntimeError("Non-finite values in bottleneck features")
 
-        print("\n===== BOTTLENECK AUDIT =====")
-        print("h mean :", h.mean().item())
-        print("h std  :", h.std().item())
-        print("h max  :", h.abs().max().item())
-
-        if physics_attention_bias is not None:
-            print("physics bias mean:", physics_attention_bias.mean().item())
-            print("physics bias std :", physics_attention_bias.std().item())
-            print("physics bias max :", physics_attention_bias.abs().max().item())
-        else:
-            print("physics bias = None")
-
-        # =====================================================
-        # DEBUG : gradient entering transformer
-        # =====================================================
         h = self.middle_block(
             h,
             emb,
             physics_attention_bias=physics_attention_bias
         )
 
-        # =====================================================
-        # DEBUG : gradient leaving transformer
-        # =====================================================
         for module in self.output_blocks:
             h = th.cat([h, hs.pop()], dim=1)
             h = module(h, emb)
@@ -1192,8 +1145,6 @@ class EncoderUNetModel(nn.Module):
 
         emb = emb.to(self.dtype)
 
-        time_emb = emb.detach()
-
         look_emb = None
         ms_emb = None
         spec_emb = None
@@ -1206,17 +1157,6 @@ class EncoderUNetModel(nn.Module):
             if self.pool.startswith("spatial"):
                 results.append(h.type(x.dtype).mean(dim=(2, 3)))
         h = self.middle_block(h, emb)
-
-        if not hasattr(self, "_physics_stats_printed"):
-            self._physics_stats_printed = True
-
-            print("\n========== PHYSICS TRANSFORMER ==========")
-            print("Feature shape:", tuple(h.shape))
-            print("mean:", h.mean().item())
-            print("std :", h.std().item())
-            print("max :", h.abs().max().item())
-            print("nan :", th.isnan(h).any().item())
-            print("========================================\n")
 
         if self.pool.startswith("spatial"):
             results.append(h.type(x.dtype).mean(dim=(2, 3)))

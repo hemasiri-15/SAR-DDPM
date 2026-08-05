@@ -137,6 +137,12 @@ class PhysicsBiasFusion(nn.Module):
         self.alpha_spectral = nn.Parameter(torch.zeros(()))
         self.alpha_confidence = nn.Parameter(torch.zeros(()))
 
+        # ==========================================================
+        # Research Metrics
+        # ==========================================================
+        self.last_gate_values = None
+        self.last_bias_norm = None
+
     def forward(
         self,
         orientation_relation: torch.Tensor,
@@ -176,12 +182,6 @@ class PhysicsBiasFusion(nn.Module):
             * orientation_relation
         )
 
-        print("\n===== GRAD MODE =====")
-        print("torch.is_grad_enabled():", torch.is_grad_enabled())
-        print("physics_attention_bias.requires_grad:", physics_attention_bias.requires_grad)
-        print("physics_attention_bias.grad_fn:", physics_attention_bias.grad_fn)
-        print("=====================\n")
-
         if wavelet_relation is not None:
             physics_attention_bias = (
                 physics_attention_bias + self.alpha_wavelet * wavelet_relation
@@ -197,16 +197,50 @@ class PhysicsBiasFusion(nn.Module):
                 + self.alpha_confidence * confidence_relation
             )
 
-        print(
-            "physics_attention_bias.requires_grad:",
-            physics_attention_bias.requires_grad
-        )
-        print(
-            "physics_attention_bias.grad_fn:",
-            physics_attention_bias.grad_fn
-        )
+        # ==========================================================
+        # Research Metrics
+        # Store the current learned gate values for logging and
+        # visualization. This does NOT affect gradients or training.
+        # ==========================================================
+        self.last_gate_values = {
+            "orientation": self.alpha_orientation.detach().item(),
+            "wavelet": self.alpha_wavelet.detach().item(),
+            "spectral": self.alpha_spectral.detach().item(),
+            "confidence": self.alpha_confidence.detach().item(),
+        }
+
+        # ==========================================================
+        # Research Metric
+        # Overall magnitude of the fused physics attention bias.
+        # ==========================================================
+        self.last_bias_norm = physics_attention_bias.norm().detach().item()
 
         return physics_attention_bias
+
+    def get_gate_values(self):
+        """
+        Returns the latest learned gate values.
+
+        Returns
+        -------
+        dict or None
+            Dictionary containing the current gate values for each
+            physics modality. Returns None if forward() has not yet
+            been executed.
+        """
+        return self.last_gate_values
+
+    def get_bias_norm(self):
+        """
+        Returns the L2 norm of the most recently generated
+        physics attention bias.
+
+        Returns
+        -------
+        float or None
+            None if forward() has not yet been called.
+        """
+        return self.last_bias_norm
 
     @staticmethod
     def _validate(

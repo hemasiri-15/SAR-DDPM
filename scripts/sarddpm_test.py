@@ -87,15 +87,11 @@ def main():
 
     logger.log("Loading model from checkpoint:" + test_checkpoint)
     dict_load = dist_util.load_state_dict(test_checkpoint, map_location=dist_util.dev())
-    logger.log("DEBUG 1")
 
     model.load_state_dict(dict_load, strict=False)
-    logger.log("DEBUG 2")
 
     if training_args['use_fp16']:
-        logger.log("DEBUG 3")
         model.convert_to_fp16()
-        logger.log("DEBUG 4")
             
     logger.log("Beginning testing...")
 

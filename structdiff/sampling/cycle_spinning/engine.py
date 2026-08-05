@@ -1441,8 +1441,6 @@ class CycleSpinningEngine:
 
         kwargs.update(extra)
 
-        print("Aggregator kwargs:", kwargs)
-
         agg = adapter_cls(
             **kwargs,
         ).to(self._config.device)

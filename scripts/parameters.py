@@ -15,8 +15,8 @@ def default_args(test=False):
             model_to_use = "MAX", #"BEST", #
             images_path = "test_images",
 
-            use_ddim = False,
-            timestep_respacing = "100", #[0,0,11,8,6], #[0,0,6,8,11], #[0,0,12,16,22], #[0,0,24,32,44], #[36,24,24,8,8],
+            use_ddim = True,
+            timestep_respacing = "ddim100", #[0,0,11,8,6], #[0,0,6,8,11], #[0,0,12,16,22], #[0,0,24,32,44], #[36,24,24,8,8],
         )
     else: # Train
         defaults = dict(

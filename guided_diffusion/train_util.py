@@ -5,11 +5,19 @@ from tqdm import tqdm
 import blobfile as bf
 
 import torch
+
+# ==========================================================
+# cuDNN autotuner (fixed input size = faster convolutions)
+# ==========================================================
+torch.backends.cudnn.benchmark = True
+
 import torch.distributed as dist
 from torch.nn.parallel.distributed import DistributedDataParallel as DDP
 from torch.optim import AdamW, Adam
 
-torch.autograd.set_detect_anomaly(True)
+#torch.autograd.set_detect_anomaly(True)
+DEBUG_GRADIENTS = False
+torch.autograd.set_detect_anomaly(DEBUG_GRADIENTS)
 
 from . import dist_util, logger
 from .fp16_util import MixedPrecisionTrainer
@@ -69,6 +77,7 @@ class TrainLoop:
         lr_anneal_steps=0,
         use_ddim=False,
         learn_sigma=True,
+        profile=False,
     ):
         self.model = model
         self.diffusion = diffusion
@@ -93,6 +102,7 @@ class TrainLoop:
         self.lr_anneal_steps = lr_anneal_steps
         self.use_ddim = use_ddim
         self.learn_sigma = learn_sigma
+        self.profile = profile
 
         self.step = 0
 
@@ -288,35 +298,18 @@ class TrainLoop:
         start_time = time.perf_counter()
         net_loss = 0.0
 
-        print("\n[DEBUG] ===== Initial validation starting =====", flush=True)
 
-        try:
-            print("[DEBUG] Calling evaluate()...", flush=True)
-
-            # Get performance before training
-            avg_psnr, avg_ssim, _, mse, max_psnr = evaluate(
-                self.val_loader,
-                self.diffusion,
-                self.ddp_model,
-                dist_util.dev(),
-                images_folder,
-                cycle_spinning=True,
-                cycle_width=100000,
-                use_ddim=self.use_ddim,
-            )
-
-            print("[DEBUG] evaluate() returned successfully.", flush=True)
-            print(
-                f"[DEBUG] PSNR={avg_psnr:.4f}, SSIM={avg_ssim:.4f}, MSE={mse:.6e}",
-                flush=True,
-            )
-
-        except Exception:
-            import traceback
-            print("\n========== EXCEPTION INSIDE evaluate() ==========", flush=True)
-            traceback.print_exc()
-            print("=================================================\n", flush=True)
-            raise
+        # Get performance before training
+        avg_psnr, avg_ssim, _, mse, max_psnr = evaluate(
+            self.val_loader,
+            self.diffusion,
+            self.ddp_model,
+            dist_util.dev(),
+            images_folder,
+            cycle_spinning=True,
+            cycle_width=128,
+            use_ddim=self.use_ddim,
+        )
 
         logger.log(f"\tStep = {self.step:>5},  PSNR: {avg_psnr:5.2f},  SSIM: {avg_ssim:5.3f},  MSE: {mse:2.1e},  Loss: 0.00e+00,  Net training time: {(time.perf_counter() - start_time - net_val_time):.1f}s,  Net validation time: {net_val_time:.1f}s")
         progress_bar = tqdm(total=self.log_interval, desc="[Training] Step:     0, Loss: 0.00e+00", unit="step")
@@ -500,37 +493,9 @@ class TrainLoop:
                 self.diffusion, t, {k: v * weights for k, v in losses.items()}
             )
 
-            print("\n========== LOSS DEBUG ==========")
-            print("diffusion_loss :", losses["loss"].mean().item())
-            print("struct_loss    :", struct_loss.item())
-
-            if self.lambda_edge > 0.0:
-                print("edge_loss      :", edge_loss.item())
-
-            if self.lambda_wavelet > 0.0:
-                print("wavelet_loss   :", wavelet_loss.item())
-
-            if self.lambda_ssim > 0.0:
-                print("ssim_loss      :", ssim_loss.item())
-
-            print("total_loss     :", loss.item())
-            print("loss finite    :", torch.isfinite(loss).item())
-            print("x0_hat finite  :", torch.isfinite(x0_hat).all().item())
-            print("================================\n")
-
-            with torch.autograd.detect_anomaly():
-                self.mp_trainer.backward(loss)
-
-            for name, p in self.model.named_parameters():
-                if p.grad is not None and not torch.isfinite(p.grad).all():
-                    print(f"First NaN gradient: {name}")
-                    break
-
-            total_grad = 0.0
-
-            for p in self.model.parameters():
-                if p.grad is not None:
-                    total_grad += p.grad.abs().sum().item()
+            self.mp_trainer.backward(loss)
+            #with torch.autograd.detect_anomaly():
+                #self.mp_trainer.backward(loss)
 
         return net_loss / self.batch_size
 
@@ -549,6 +514,51 @@ class TrainLoop:
     def log_step(self):
         logger.logkv("step", self.step + self.resume_step)
         logger.logkv("samples", (self.step + self.resume_step + 1) * self.global_batch)
+
+        # ------------------------------------------------------
+        # Research Metric: Physics Attention Shift
+        # ------------------------------------------------------
+        model = (
+            self.ddp_model.module
+            if hasattr(self.ddp_model, "module")
+            else self.ddp_model
+        )
+
+        if hasattr(model, "get_physics_metrics"):
+
+            physics_metrics = model.get_physics_metrics()
+
+            for metric_name, metric_value in physics_metrics.items():
+
+                if metric_value is None:
+                    continue
+
+                # Nested dictionaries (e.g. gate values)
+                if isinstance(metric_value, dict):
+
+                    for key, value in metric_value.items():
+
+                        logger.logkv(
+                            f"{metric_name}/{key}",
+                            value,
+                        )
+
+                # Torch tensors
+                elif torch.is_tensor(metric_value):
+
+                    if metric_value.numel() == 1:
+                        logger.logkv(
+                            metric_name,
+                            metric_value.item(),
+                        )
+
+                # Scalars
+                elif isinstance(metric_value, (float, int)):
+
+                    logger.logkv(
+                        metric_name,
+                        metric_value,
+                    )
 
     def save(self, latest=False, max=False):
         logger_dir = logger.get_dir()
