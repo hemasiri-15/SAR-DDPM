@@ -39,8 +39,19 @@ from datasets import SARDataset
 sen12_sar_list_path = "../sen12/sar/sar_test_samples.txt"
 hrsid_sar_list_path = "../HRSID_png/inshore_images/sar_test_samples.txt"
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-lpips_model = lpips.LPIPS(net='alex').to(device)
+# LPIPS is loaded lazily, on the device of the tensors actually being
+# compared, rather than at import time on a fixed device. This avoids
+# paying model-load cost on unrelated imports of this module and avoids
+# a cross-device error under multi-GPU DDP (each rank's tensors live on
+# that rank's own device).
+_lpips_models = {}
+
+
+def _get_lpips_model(device):
+    key = str(device)
+    if key not in _lpips_models:
+        _lpips_models[key] = lpips.LPIPS(net='alex').to(device)
+    return _lpips_models[key]
 
 def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False, cycle_width=0, log=False, test=False, use_ddim=False, sample_to_use="LAST"):
     sample_fn = (
@@ -58,6 +69,14 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
             raise ValueError(
                 f"Unknown sample_to_use='{sample_to_use}'. "
                 "Expected one of {'LAST', 'MAX', 'SWEEP'}."
+            )
+        if use_ddim and sample_to_use != "LAST":
+            # DDIM only ever produces a single sample (iterations == 1), so
+            # "MAX" and "SWEEP" have no distinct effect from "LAST" here.
+            logger.log(
+                f"NOTE: sample_to_use='{sample_to_use}' has no effect under "
+                f"DDIM (a single sample is produced); behavior is identical "
+                f"to 'LAST'.\n"
             )
 
     model.eval()
@@ -166,22 +185,12 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
             batch_start = time.perf_counter()
 
             if (cycle_spinning):
-                first = True
                 [_, _, num_rows, num_cols] = noisy_tensor.size()
-                val_inputv = torch.empty_like(noisy_tensor).to(device)
 
                 # Get number of cycle spins
                 N = int(np.ceil(num_rows / cycle_width) * np.ceil(num_cols / cycle_width))
 
-                spin_outputs = []
-                from structdiff.sampling.cycle_spinning.engine import (
-                    CycleSpinningEngine,
-                    EngineConfig,
-                )
-
-                engine = CycleSpinningEngine(
-                    EngineConfig(method="dynamic_hypergraph")
-                )
+                pred_tensor = None
 
                 # For each cycle (in both directions)
                 for row in range(0, num_rows, cycle_width):
@@ -246,16 +255,14 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
                                 model_kwargs=model_kwargs,
                             )
 
-                        # Unspin the image and add to the averaged image
-                        if (first):
-                            pred_tensor = (1.0/N)*sample
-
-                            first = False
-                        else:
-                            pred_tensor[:, :, num_rows-row:, num_cols-col:] += (1.0/N) * sample[:, :, :row, :col]
-                            pred_tensor[:, :, :num_rows-row, :num_cols-col] += (1.0/N) * sample[:, :, row:, col:]
-                            pred_tensor[:, :, :num_rows-row, num_cols-col:] += (1.0/N) * sample[:, :, row:, :col]
-                            pred_tensor[:, :, num_rows-row:, :num_cols-col] += (1.0/N) * sample[:, :, :row, col:]
+                        # Unspin (shift back) and accumulate the average.
+                        # torch.roll with dims=(-2, -1) always targets the spatial
+                        # axes regardless of whether `sample` is [B,C,H,W] (DDIM)
+                        # or [T,B,C,H,W] (DDPM full trajectory) — unlike the
+                        # previous manual slice-based unshift, which assumed a
+                        # 4-D tensor and silently corrupted results under DDPM.
+                        unshifted = torch.roll(sample, shifts=(-row, -col), dims=(-2, -1))
+                        pred_tensor = (unshifted / N) if pred_tensor is None else pred_tensor + (unshifted / N)
 
             else:
                 # Otherwise, get the predicted clean image as normal
@@ -286,8 +293,13 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
             pred_tensor = pred_tensor[itr_indexes]
 
             # Allocate metric arrays once, using the actual number of iterations.
+            # Sized against the dataset's true length (not len(loader) * the
+            # current batch's size), so a non-divisible final batch cannot leave
+            # trailing all-zero rows that would silently bias psnr_means /
+            # ssim_means / lpips_means (and the "best iteration" they select).
             if all_tensor_psnr is None:
-                metric_shape = (len(loader) * batch_size, iterations)
+                total_samples = len(loader.dataset)
+                metric_shape = (total_samples, iterations)
 
                 all_tensor_psnr = np.zeros(metric_shape, dtype=np.float32)
                 all_tensor_ssim = np.zeros(metric_shape, dtype=np.float32)
@@ -298,19 +310,13 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
             pred_image = torch.round(torch.mean(pred_image, dim=2)) / 255.0
             pred_image = pred_image.contiguous()
 
-            batch_mse = F.mse_loss(
-                clean_image,
-                pred_image[-1],
-                reduction="mean",
-            ).item()
-
             pred_image_np = pred_image.cpu().numpy()
             clean_image_np = clean_image.cpu().numpy()
 
             max_psnr_index = [0] * batch_size
             max_psnr = [0.0] * batch_size
             for b in range(batch_size):
-                idx = batch_idx * batch_size + b
+                idx = batch_idx * loader.batch_size + b
                 # ==========================================================
                 # DDIM produces a single prediction.
                 # DDPM produces multiple predictions.
@@ -320,6 +326,7 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
                     all_tensor_psnr[idx, t] = psnr(
                         clean_image_np[b],
                         pred_image_np[t, b],
+                        data_range=1,
                     )
 
                     all_tensor_ssim[idx, t] = ssim(
@@ -353,6 +360,12 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
                     f"Unknown sample_to_use='{sample_to_use}'."
                 )
 
+            batch_mse = F.mse_loss(
+                clean_image,
+                pred_image,
+                reduction="mean",
+            ).item()
+
             pred_image_np = pred_image.cpu().numpy()
             clean_image_np = clean_image.cpu().numpy()
 
@@ -362,8 +375,8 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
 
             # LPIPS on the SAME final prediction
             img_lpips = compute_lpips_batch(
-                clean_tensor * 2.0 - 1.0,
-                pred_tensor * 2.0 - 1.0,
+                clean_tensor,
+                pred_tensor,
             )
 
             for b in range(batch_size):
@@ -373,8 +386,9 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
 
             for b in range(batch_size):
 
-                img_psnr[b] = psnr(clean_image_np[b], pred_image_np[b])
+                img_psnr[b] = psnr(clean_image_np[b], pred_image_np[b], data_range=1)
                 img_ssim[b] = ssim(clean_image_np[b], pred_image_np[b], data_range=1)
+
                 # img_vifp[b] = vifp(clean_image_np[b], pred_image_np[b])
             
             noisy_image = ((noisy_tensor + 1.0)* 127.5).clamp(0, 255.0)
@@ -453,8 +467,6 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
             del pred_image
             del clean_image
             del noisy_image
-
-            torch.cuda.empty_cache()
 
         progress_bar.close()
 
@@ -552,23 +564,29 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
 
     return net_psnr, net_ssim, net_time, net_mse, max_psnr
 
-
 def compute_lpips_batch(sr_tensors, gt_tensors):
     """
     Compute LPIPS for a batch.
 
-    Accepts either:
-        [N, H, W]
-    or
-        [N, 3, H, W]
+    Accepts [N, H, W] (single-channel) or [N, C, H, W] for any C
+    (C == 1, C == 3, and C == 6 dual-pol SAR are all handled below).
     """
 
-    # Convert grayscale -> RGB if needed
-    if sr_tensors.dim() == 3:
-        sr_tensors = sr_tensors.unsqueeze(1).repeat(1, 3, 1, 1)
+    def _to_rgb(x):
+        # Convert grayscale -> RGB if needed
+        if x.dim() == 3:
+            x = x.unsqueeze(1)
+        c = x.shape[1]
+        if c == 3:
+            return x
+        if c == 1:
+            return x.repeat(1, 3, 1, 1)
+        # Any other channel count (e.g. 6-channel dual-pol SAR): collapse
+        # to a single channel by averaging, then broadcast to RGB.
+        return x.mean(dim=1, keepdim=True).repeat(1, 3, 1, 1)
 
-    if gt_tensors.dim() == 3:
-        gt_tensors = gt_tensors.unsqueeze(1).repeat(1, 3, 1, 1)
+    sr_tensors = _to_rgb(sr_tensors)
+    gt_tensors = _to_rgb(gt_tensors)
 
     # Safety checks
     assert sr_tensors.dim() == 4, sr_tensors.shape
@@ -576,9 +594,10 @@ def compute_lpips_batch(sr_tensors, gt_tensors):
     assert sr_tensors.shape[1] == 3, sr_tensors.shape
     assert gt_tensors.shape[1] == 3, gt_tensors.shape
 
+    lpips_model = _get_lpips_model(sr_tensors.device)
     lpips_values = lpips_model(sr_tensors, gt_tensors)
 
-    lpips_values = lpips_values.squeeze().tolist()
+    lpips_values = lpips_values.squeeze(-1).squeeze(-1).squeeze(-1).tolist()
 
     if not isinstance(lpips_values, list):
         lpips_values = [lpips_values]

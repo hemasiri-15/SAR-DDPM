@@ -145,10 +145,15 @@ class TrainLoop:
             and dist.is_initialized()
         ):
             self.use_ddp = True
+            # Use this rank's actual assigned device rather than hardcoding
+            # device 0, which broke multi-GPU DDP (every rank tried to place
+            # its replica on physical GPU 0).
+            local_device = dist_util.dev()
+            local_device_id = local_device.index if local_device.type == "cuda" else None
             self.ddp_model = DDP(
                 self.model,
-                device_ids=[0],
-                output_device=0,
+                device_ids=[local_device_id] if local_device_id is not None else None,
+                output_device=local_device_id,
                 broadcast_buffers=False,
                 bucket_cap_mb=128,
                 find_unused_parameters=True,
@@ -368,6 +373,7 @@ class TrainLoop:
                     images_folder,
                     cycle_spinning=True,
                     cycle_width=128,
+                    use_ddim=self.use_ddim,
                 )
                 net_val_time += time.perf_counter() - val_time
 
@@ -405,6 +411,7 @@ class TrainLoop:
         self.mp_trainer.zero_grad()
 
         net_loss = 0.0
+        n_chunks = 0
 
         for i in range(0, batch.shape[0], self.microbatch):
             micro = batch[i: i + self.microbatch].to(dist_util.dev())
@@ -488,6 +495,7 @@ class TrainLoop:
             # ──────────────────────────────────────────────────────────
 
             net_loss += loss
+            n_chunks += 1
 
             log_loss_dict(
                 self.diffusion, t, {k: v * weights for k, v in losses.items()}
@@ -497,7 +505,7 @@ class TrainLoop:
             #with torch.autograd.detect_anomaly():
                 #self.mp_trainer.backward(loss)
 
-        return net_loss / self.batch_size
+        return net_loss / n_chunks
 
     def _update_ema(self):
         for rate, params in zip(self.ema_rate, self.ema_params):
@@ -588,17 +596,6 @@ class TrainLoop:
         for rate, params in zip(self.ema_rate, self.ema_params):
             save_checkpoint(rate, params)
 
-        # Save optimizer
-        if (not dist.is_initialized()) or dist.get_rank() == 0:
-            with bf.BlobFile(
-                bf.join(logger_dir, "opt_latest.pt"),
-                "wb",
-            ) as f:
-                torch.save(self.opt.state_dict(), f)
-
-        if dist.is_initialized():
-            dist.barrier()
-
         # Save optimizer state
         if (not dist.is_initialized()) or dist.get_rank() == 0:
             with bf.BlobFile(
@@ -607,12 +604,8 @@ class TrainLoop:
             ) as f:
                 torch.save(self.opt.state_dict(), f)
 
-        for rate, params in zip(self.ema_rate, self.ema_params):
-            save_checkpoint(rate, params)
-
         if dist.is_initialized():
             dist.barrier()
-
 
 def parse_resume_step_from_filename(filename):
     """
