@@ -352,10 +352,24 @@ class TrainLoop:
             noisy_tensor = noisy_tensor.to(dist_util.dev())
             clean_tensor = clean_tensor.to(dist_util.dev())
 
+            def _move_to_device(v, device):
+                # Handles a plain tensor, or a tuple/list of tensors (e.g.
+                # struct_tensors' three scales), moving every tensor found
+                # to `device`. Previously this only checked `isinstance(v,
+                # tuple)`, so a dataset/collate function that yields a list
+                # instead of a tuple for a multi-tensor conditioning value
+                # (struct_tensors) would silently leave it on CPU -- exactly
+                # the mismatch causing "Input type (torch.FloatTensor) and
+                # weight type (torch.cuda.FloatTensor) should be the same".
+                if torch.is_tensor(v):
+                    return v.to(device)
+                if isinstance(v, (tuple, list)):
+                    moved = [_move_to_device(t, device) for t in v]
+                    return tuple(moved) if isinstance(v, tuple) else moved
+                return v
+
             conditions = {
-                k: (v.to(dist_util.dev()) if torch.is_tensor(v)
-                    else tuple(t.to(dist_util.dev()) for t in v) if isinstance(v, tuple)
-                    else v)
+                k: _move_to_device(v, dist_util.dev())
                 for k, v in conditions.items()
             }
 
