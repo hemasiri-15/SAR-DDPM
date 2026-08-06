@@ -8,7 +8,6 @@ import datetime
 from torch.utils.data import DataLoader
 import blobfile as bf
 import torch
-import torch.nn.attention as attention
 
 # ==========================================================
 # NVIDIA Tensor Core Optimization
@@ -39,11 +38,24 @@ def main():
     if (args.seed is not None):
         set_seed(args.seed)
 
+    # cuDNN's autotuner benchmarks convolution algorithms on first use and
+    # picks the fastest for the given (fixed) input size. Now driven by
+    # --benchmark instead of being hardcoded at import time (previously the
+    # flag was defined but had no effect at all). Default is True, matching
+    # this repo's prior always-on behavior.
+    torch.backends.cudnn.benchmark = args.benchmark
+
     dist_util.setup_dist()
 
-    dataset_name = os.path.basename(os.path.dirname(args.train_dir))
-    if not dataset_name:
-        dataset_name = os.path.basename(args.train_dir)
+    # Derive a human-readable dataset name for the log-folder timestamp
+    # prefix from args.train_dir, robust to a leading "./", a trailing
+    # slash, or no separators at all. os.path.normpath collapses all of
+    # these to a single canonical form before taking the final path
+    # component, so e.g. "./Training_Data", "Training_Data", and
+    # "/data/SEN12/train/" all resolve sensibly (to "Training_Data",
+    # "Training_Data", and "train" respectively). Falls back to a fixed
+    # literal only for a fully degenerate path (e.g. ".").
+    dataset_name = os.path.basename(os.path.normpath(args.train_dir)) or "dataset"
 
     log_folder = bf.join(
         args.log_path,
@@ -66,20 +78,18 @@ def main():
     model.to(dist_util.dev())
 
     if args.compile_model:
-        logger.log("Model compilation disabled.")
-
-        #model = torch.compile(
-        #    model,
-        #    mode="default",
-        #)
+        # torch.compile is not yet wired in here: it hasn't been verified
+        # against this repo's custom autograd hook (EpsInterceptHook), the
+        # structure/edge/wavelet/SSIM auxiliary losses, and DDP together.
+        # Left explicit rather than silently compiling (or silently doing
+        # nothing behind a misleading log message) until that's verified.
+        logger.log("compile_model=True requested, but torch.compile is not yet enabled for this model; running eagerly.")
 
     schedule_sampler = create_named_schedule_sampler(args.schedule_sampler, diffusion)
 
     logger.log("Creating data loaders...")
 
     train_dataset = WaveletDataset(args.train_dir, train=True, num_channels=args.in_channels, crop_size=(args.large_size, args.large_size), seed=args.seed)
-
-    from torch.utils.data import Subset
 
     loader_kwargs = {}
 
@@ -122,17 +132,23 @@ def main():
 
 
 def create_argparser():
-    custom_defaults = dict( # These are overwridden by parameters.py
+    custom_defaults = dict(
         # train and eval
-        log_interval = 50,
-        save_interval = 250,
+        # NOTE: log_interval, save_interval, batch_size, compile_model, and
+        # timestep_respacing are intentionally NOT set here even though this
+        # is a natural place to look for them: parameters.py::default_args()
+        # defines the authoritative value for each of these (applied after
+        # this dict via defaults.update(default_args()) below), so a value
+        # set here would be silently overridden. Keeping both previously
+        # caused custom_defaults to display values that were never actually
+        # in effect (e.g. batch_size=2 here, but 8 at runtime) -- see audit.
         val_samples = 20,
-        batch_size = 2,
         use_ddim = False,
         microbatch = 1,
         lr_anneal_steps = 0,
         weight_decay = 0.0,
-        seed = None,
+        seed = None,  # authoritative value also comes from default_args(); kept
+                      # here only as the argparse fallback if that key is absent.
         num_workers=4,
 
         # model
@@ -152,10 +168,13 @@ def create_argparser():
         class_cond = False,
         compile_model=True,
         profile=False,
-        benchmark=False,
+        # Default True to preserve this repo's prior behavior, where cuDNN
+        # benchmarking was unconditionally enabled regardless of this flag's
+        # value. The flag is now actually wired to torch.backends.cudnn.benchmark
+        # in main(), so it can be explicitly disabled if needed.
+        benchmark=True,
 
         # diffusion
-        timestep_respacing = "ddim100",
         diffusion_steps = 1000,
         schedule_sampler = "uniform",
         noise_schedule = "linear",

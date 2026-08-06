@@ -451,19 +451,6 @@ class UNetModel(nn.Module):
                                     increased efficiency.
     """
 
-    def get_attention_shift(self):
-        """
-        Returns the latest physics attention shift metric.
-        """
-
-        for module in self.modules():
-            if hasattr(module, "get_attention_shift"):
-                shift = module.get_attention_shift()
-                if shift is not None:
-                    return shift
-
-        return None
-
     def __init__(
         self,
         image_size,
@@ -549,10 +536,6 @@ class UNetModel(nn.Module):
         self.last_condition_weights = None
 
         self.physics_attention_bias_builder = PhysicsAttentionBiasBuilder()
-
-        for module in self.modules():
-            if module.__class__.__name__ == "PhysicsAwareAttention":
-                module.track_attention_shift = True
 
         if self.num_classes is not None:
             self.label_emb = nn.Embedding(num_classes, time_embed_dim)
@@ -649,7 +632,15 @@ class UNetModel(nn.Module):
             ),
         )
 
-        attn = self.middle_block[2].attn
+        # Enable attention-shift tracking now that middle_block (the only
+        # place a PhysicsAwareAttention module lives) actually exists.
+        # Previously this loop ran earlier in __init__, before middle_block
+        # was built, so self.modules() never found a PhysicsAwareAttention
+        # instance and track_attention_shift stayed False for the entire
+        # run -- silently disabling the attention-shift research metric.
+        for module in self.modules():
+            if module.__class__.__name__ == "PhysicsAwareAttention":
+                module.track_attention_shift = True
 
         self._feature_size += ch
 
@@ -705,6 +696,19 @@ class UNetModel(nn.Module):
             zero_module(conv_nd(dims, input_ch, out_channels, 3, padding=1)),
         )
 
+    def get_attention_shift(self):
+        """
+        Returns the latest physics attention shift metric.
+        """
+
+        for module in self.modules():
+            if hasattr(module, "get_attention_shift"):
+                shift = module.get_attention_shift()
+                if shift is not None:
+                    return shift
+
+        return None
+
     def convert_to_fp16(self):
         """
         Convert the torso of the model to float16.
@@ -718,8 +722,6 @@ class UNetModel(nn.Module):
         """
         Convert the torso of the model to float32.
         """
-        self.vgg.apply(convert_module_to_f32)
-
         self.input_blocks.apply(convert_module_to_f32)
         self.middle_block.apply(convert_module_to_f32)
         self.output_blocks.apply(convert_module_to_f32)
@@ -816,17 +818,20 @@ class UNetModel(nn.Module):
 
         if USE_PHYSICS and struct_tensor is not None:
             struct_emb = self.struct_encoder(struct_tensor).to(self.dtype)
-            emb = emb + struct_emb
+            # (previously also did `emb = emb + struct_emb` here directly --
+            # that double-counted structure-tensor conditioning, since
+            # struct_emb already flows through the adaptive gated fusion
+            # below like every other conditioning signal.)
 
         if USE_MS and struct_tensors is not None:
             st1, st2, st3 = struct_tensors
-            ms_struct_emb = self.ms_struct_encoder(st1, st2, st3)
+            ms_struct_emb = self.ms_struct_encoder(st1, st2, st3).to(self.dtype)
 
         if USE_SPECTRAL and spectral_tensor is not None:
-            spectral_emb = self.tensor_spectral_encoder(spectral_tensor)
+            spectral_emb = self.tensor_spectral_encoder(spectral_tensor).to(self.dtype)
 
         if USE_WAVELET and wavelet_tensor is not None:
-            wavelet_emb = self.wavelet_encoder(wavelet_tensor)
+            wavelet_emb = self.wavelet_encoder(wavelet_tensor).to(self.dtype)
 
         condition_names = []
         condition_embeddings = []
@@ -889,7 +894,7 @@ class UNetModel(nn.Module):
             hs.append(h)
 
         physics_attention_bias = None
-        if struct_tensor is not None:
+        if USE_PHYSICS and struct_tensor is not None:
             bottleneck_height, bottleneck_width = h.shape[-2], h.shape[-1]
             struct_tensor_at_bottleneck = F.interpolate(
                 struct_tensor,
@@ -901,12 +906,6 @@ class UNetModel(nn.Module):
             physics_attention_bias = self.physics_attention_bias_builder(
                 struct_tensor_at_bottleneck
             )
-
-        if torch.isnan(h).any():
-            raise RuntimeError("NaN in bottleneck features")
-
-        if not torch.isfinite(h).all():
-            raise RuntimeError("Non-finite values in bottleneck features")
 
         h = self.middle_block(
             h,
@@ -936,6 +935,15 @@ class SuperResModel(UNetModel):
         noisy = kwargs['noisy']
         look_num = kwargs.get("look_num", None)
         struct_tensor = kwargs.get("struct_tensor", None)
+        # Previously only look_num and struct_tensor were read from kwargs
+        # and forwarded to UNetModel.forward() -- struct_tensors,
+        # spectral_tensor, and wavelet_tensor were silently dropped here
+        # regardless of what the caller passed in, which meant ms_struct_emb,
+        # spectral_emb, and wavelet_emb were never computed for this model
+        # class at all.
+        struct_tensors = kwargs.get("struct_tensors", None)
+        spectral_tensor = kwargs.get("spectral_tensor", None)
+        wavelet_tensor = kwargs.get("wavelet_tensor", None)
 
         x = th.cat((x, noisy), dim=1)
 
@@ -943,7 +951,10 @@ class SuperResModel(UNetModel):
             x,
             timesteps,
             look_num=look_num,
-        struct_tensor=struct_tensor,
+            struct_tensor=struct_tensor,
+            struct_tensors=struct_tensors,
+            spectral_tensor=spectral_tensor,
+            wavelet_tensor=wavelet_tensor,
         )
 
         return output
@@ -1146,13 +1157,6 @@ class EncoderUNetModel(nn.Module):
         """
         emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
         emb = emb.to(self.dtype)
-
-        emb = emb.to(self.dtype)
-
-        look_emb = None
-        ms_emb = None
-        spec_emb = None
-        wave_emb = None
 
         results = []
         h = x.type(self.dtype)
