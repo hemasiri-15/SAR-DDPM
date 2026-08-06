@@ -41,9 +41,15 @@ def main():
 
     dist_util.setup_dist()
 
+    dataset_name = os.path.basename(os.path.dirname(args.train_dir))
+    if not dataset_name:
+        dataset_name = os.path.basename(args.train_dir)
+
     log_folder = bf.join(
         args.log_path,
-        datetime.datetime.now().strftime(f"{args.train_dir.split('/')[1]}_%Y-%m-%d-%H-%M-%S"),
+        datetime.datetime.now().strftime(
+            f"{dataset_name}_%Y-%m-%d-%H-%M-%S"
+        ),
     )
     logger.configure(dir=log_folder, log_suffix="_train", format_strs=["log", "csv"])
 

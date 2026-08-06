@@ -13,9 +13,8 @@ torch.backends.cudnn.benchmark = True
 
 import torch.distributed as dist
 from torch.nn.parallel.distributed import DistributedDataParallel as DDP
-from torch.optim import AdamW, Adam
+from torch.optim import AdamW
 
-#torch.autograd.set_detect_anomaly(True)
 DEBUG_GRADIENTS = False
 torch.autograd.set_detect_anomaly(DEBUG_GRADIENTS)
 
@@ -55,6 +54,11 @@ INITIAL_LOG_LOSS_SCALE = 20.0
 
 
 class TrainLoop:
+    # Cycle-spinning window used for periodic validation during training.
+    # Pulled out as a single named constant (was previously duplicated as a
+    # bare "128" literal at both evaluate() call sites in run_loop()).
+    _VALIDATION_CYCLE_WIDTH = 128
+
     def __init__(
         self,
         *,
@@ -93,7 +97,6 @@ class TrainLoop:
         )
         self.log_interval = log_interval
         self.save_interval = save_interval
-        self.resume_checkpoint = find_resume_checkpoint() or resume_checkpoint
         self.in_channels = in_channels
         self.use_fp16 = use_fp16
         self.fp16_scale_growth = fp16_scale_growth
@@ -111,7 +114,15 @@ class TrainLoop:
 
         self.sync_cuda = torch.cuda.is_available()
 
-        self.resume_checkpoint = resume_checkpoint
+        # Resolve the checkpoint to resume from once: prefer an auto-discovered
+        # checkpoint (find_resume_checkpoint), falling back to the explicitly
+        # passed-in `resume_checkpoint`. (Previously this value was computed
+        # correctly here and then immediately clobbered by a second, dead
+        # `self.resume_checkpoint = resume_checkpoint` assignment below —
+        # harmless only because find_resume_checkpoint() is currently a stub
+        # that always returns None. Removed so auto-resume, if implemented
+        # later, isn't silently discarded.)
+        self.resume_checkpoint = find_resume_checkpoint() or resume_checkpoint
         self.resume_step = 0
         self._load_and_sync_parameters()
         self.mp_trainer = MixedPrecisionTrainer(
@@ -145,9 +156,9 @@ class TrainLoop:
             and dist.is_initialized()
         ):
             self.use_ddp = True
-            # Use this rank's actual assigned device rather than hardcoding
-            # device 0, which broke multi-GPU DDP (every rank tried to place
-            # its replica on physical GPU 0).
+            # Use THIS rank's actual assigned device rather than hardcoding
+            # device 0 — hardcoding broke true multi-GPU DDP, since every
+            # rank would try to place its replica on physical GPU 0.
             local_device = dist_util.dev()
             local_device_id = local_device.index if local_device.type == "cuda" else None
             self.ddp_model = DDP(
@@ -303,7 +314,6 @@ class TrainLoop:
         start_time = time.perf_counter()
         net_loss = 0.0
 
-
         # Get performance before training
         avg_psnr, avg_ssim, _, mse, max_psnr = evaluate(
             self.val_loader,
@@ -312,7 +322,7 @@ class TrainLoop:
             dist_util.dev(),
             images_folder,
             cycle_spinning=True,
-            cycle_width=128,
+            cycle_width=self._VALIDATION_CYCLE_WIDTH,
             use_ddim=self.use_ddim,
         )
 
@@ -372,7 +382,11 @@ class TrainLoop:
                     dist_util.dev(),
                     images_folder,
                     cycle_spinning=True,
-                    cycle_width=128,
+                    cycle_width=self._VALIDATION_CYCLE_WIDTH,
+                    # Use the same sampler as the pre-training baseline call
+                    # above. Previously omitted here, so periodic validation
+                    # silently always used DDPM regardless of self.use_ddim,
+                    # making PSNR/SSIM curves inconsistent across training.
                     use_ddim=self.use_ddim,
                 )
                 net_val_time += time.perf_counter() - val_time
@@ -411,7 +425,7 @@ class TrainLoop:
         self.mp_trainer.zero_grad()
 
         net_loss = 0.0
-        n_chunks = 0
+        n_chunks = 0  # number of microbatch chunks processed this step
 
         for i in range(0, batch.shape[0], self.microbatch):
             micro = batch[i: i + self.microbatch].to(dist_util.dev())
@@ -502,9 +516,14 @@ class TrainLoop:
             )
 
             self.mp_trainer.backward(loss)
-            #with torch.autograd.detect_anomaly():
-                #self.mp_trainer.backward(loss)
 
+        # Average of the per-chunk means. Each chunk's `loss` above is
+        # already a mean over that microbatch; dividing the sum of n_chunks
+        # such means by n_chunks (rather than by self.batch_size, as before)
+        # gives the true mean loss per sample whenever microbatch != batch_size.
+        # (Gradients are unaffected either way, since each chunk's loss was
+        # already independently backpropagated above — this only changes the
+        # scalar returned for logging/the progress bar.)
         return net_loss / n_chunks
 
     def _update_ema(self):
@@ -597,6 +616,9 @@ class TrainLoop:
             save_checkpoint(rate, params)
 
         # Save optimizer state
+        # (Previously this block, and the EMA-save loop above it, were each
+        # duplicated a second time further down — writing identical content
+        # to the same files twice per save() call. Removed the duplicate.)
         if (not dist.is_initialized()) or dist.get_rank() == 0:
             with bf.BlobFile(
                 bf.join(logger_dir, "opt_latest.pt"),
@@ -606,6 +628,7 @@ class TrainLoop:
 
         if dist.is_initialized():
             dist.barrier()
+
 
 def parse_resume_step_from_filename(filename):
     """

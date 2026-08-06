@@ -14,7 +14,7 @@ any physics-bias-computation module (e.g. ``physics_bias_fusion.py``). It
 depends only on ``torch``.
 
 It is intended to be consumed later by a ``PhysicsTransformerBlock`` that
-swaps this module in for ``nn.MultiheadAttention`` inside an otherwise
+swaps this module in for standard self-attention inside an otherwise
 shared Transformer-block implementation.
 
 Design rationale
@@ -25,25 +25,27 @@ Why an *additive* attention bias
     ``softmax(QK^T / sqrt(d) + B)`` is a strict superset of ordinary
     attention: when ``B`` is all-zeros (or ``None``), the result is
     numerically identical to unbiased attention. This is exactly the
-    mechanism PyTorch's own ``attn_mask`` argument already implements
-    (it is added to the raw attention scores before the softmax), and it
-    is the same mechanism used for relative-position biases (e.g. T5,
-    Swin) and physically-informed biases in the wider literature. Because
-    the bias is purely additive and optional, this module is a drop-in
-    replacement for standard self-attention -- no architectural change is
-    required elsewhere to start feeding in a bias, and omitting the bias
-    exactly reproduces unbiased behaviour.
+    mechanism PyTorch's fused ``scaled_dot_product_attention`` already
+    implements via its ``attn_mask`` argument (a float mask is added to
+    the raw attention scores before the softmax), and it is the same
+    mechanism used for relative-position biases (e.g. T5, Swin) and
+    physically-informed biases in the wider literature. Because the bias
+    is purely additive and optional, this module is a drop-in replacement
+    for standard self-attention -- no architectural change is required
+    elsewhere to start feeding in a bias, and omitting the bias exactly
+    reproduces unbiased behaviour.
 
-Why wrap ``nn.MultiheadAttention`` instead of reimplementing attention
-    Reimplementing scaled-dot-product attention by hand would duplicate
-    well-tested, highly-optimized logic (including PyTorch's fused
-    SDPA/FlashAttention backends) for no numerical benefit, since PyTorch
-    already exposes an ``attn_mask`` hook that accepts exactly the
-    additive-bias formulation described above. Wrapping
-    ``nn.MultiheadAttention`` keeps this module small, keeps its numerics
-    identical to plain multi-head attention in the unbiased case, and
-    automatically inherits any future PyTorch attention-kernel
-    improvements.
+Why Q/K/V projections are manual rather than a black-box attention module
+    This module owns its own ``q_proj`` / ``k_proj`` / ``v_proj`` /
+    ``out_proj`` linear layers and calls
+    ``torch.nn.functional.scaled_dot_product_attention`` directly (falling
+    back to a hand-written softmax-attention implementation only when the
+    caller needs the raw attention weights back, which the fused SDPA
+    kernel does not expose). This keeps the fast path on PyTorch's fused
+    SDPA/FlashAttention backend -- including automatic inheritance of
+    future kernel improvements -- while still allowing exact reproduction
+    of unbiased multi-head attention when ``physics_attention_bias`` is
+    ``None``.
 
 Why this enables future physics-aware attention without changing the
 Transformer architecture
@@ -93,14 +95,19 @@ class PhysicsAwareAttention(nn.Module):
     num_heads : int
         Number of attention heads. Must be positive.
     dropout : float, optional
-        Dropout probability applied inside the underlying
-        ``nn.MultiheadAttention``. Default is ``0.0``.
+        Dropout probability applied to the post-softmax attention weights.
+        Default is ``0.0``.
 
     Attributes
     ----------
-    attn : nn.MultiheadAttention
-        The underlying multi-head attention module, configured with
-        ``batch_first=True`` so it directly consumes ``[B, N, D]`` tensors.
+    q_proj, k_proj, v_proj, out_proj : nn.Linear
+        The learned linear projections for queries, keys, values, and the
+        post-attention output projection. There is no separate
+        ``nn.MultiheadAttention`` submodule -- attention itself is computed
+        either via ``torch.nn.functional.scaled_dot_product_attention``
+        (fast path) or a manual softmax implementation (used when raw
+        attention weights, or the attention-shift research metric, are
+        needed -- see ``track_attention_shift`` below).
 
     Notes
     -----
@@ -141,17 +148,11 @@ class PhysicsAwareAttention(nn.Module):
         self.embed_dim = embed_dim
         self.num_heads = num_heads
         self.dropout = dropout
-
         self.head_dim = embed_dim // num_heads
-
-        assert (
-            embed_dim % num_heads == 0
-        ), "embed_dim must be divisible by num_heads"
 
         self.q_proj = nn.Linear(embed_dim, embed_dim)
         self.k_proj = nn.Linear(embed_dim, embed_dim)
         self.v_proj = nn.Linear(embed_dim, embed_dim)
-
         self.out_proj = nn.Linear(embed_dim, embed_dim)
 
         self.dropout_layer = nn.Dropout(dropout)
@@ -164,46 +165,31 @@ class PhysicsAwareAttention(nn.Module):
         self.track_attention_shift = False
         self.last_attention_shift = None
 
-    def enable_sdpa(self, enabled: bool = True):
+    def enable_sdpa(self, enabled: bool = True) -> None:
         """
         Enable or disable the SDPA backend.
 
         Parameters
         ----------
         enabled : bool
-            If True, the module will use the SDPA implementation
-            (once implemented). Otherwise it falls back to the
+            If True, the module will use the fused SDPA implementation
+            whenever possible. Otherwise it always falls back to the
             manual attention implementation.
         """
         self.use_sdpa = enabled
 
-    def _expand_bias_to_attn_mask(
+    def _validate_physics_bias(
         self, physics_attention_bias: torch.Tensor, batch_size: int, seq_len: int
-    ) -> torch.Tensor:
-        """Convert a ``[B, N, N]`` additive bias into PyTorch's attn_mask format.
+    ) -> None:
+        """Validate that an additive physics bias matches the expected shape.
 
-        ``nn.MultiheadAttention`` (non-batched call via a batch-first
-        module) expects a float ``attn_mask`` of shape either
-        ``[N, N]`` (broadcast across batch and heads) or
-        ``[B * num_heads, N, N]`` (one mask per batch element and head).
-        Since the physics bias here is per-batch-element but shared across
-        heads, it is expanded across the head dimension and reshaped/cast
-        to satisfy that contract.
-
-        Parameters
-        ----------
-        physics_attention_bias : torch.Tensor
-            Additive bias of shape ``[B, N, N]``.
-        batch_size : int
-            Batch size ``B``, used to validate the bias shape.
-        seq_len : int
-            Sequence length ``N``, used to validate the bias shape.
-
-        Returns
-        -------
-        torch.Tensor
-            Float tensor of shape ``[B * num_heads, N, N]`` suitable for
-            ``nn.MultiheadAttention``'s ``attn_mask`` argument.
+        ``physics_attention_bias`` must be ``[B, N, N]`` so it can be
+        broadcast across the head dimension (both the SDPA and manual
+        attention paths add it as ``[B, 1, N, N]`` against ``[B, H, N, N]``
+        scores). This check runs unconditionally in ``forward`` -- it's
+        pure shape/metadata inspection (no CUDA sync), so it's cheap enough
+        to always run and gives a clear error instead of an opaque failure
+        deep inside matmul/SDPA.
         """
         if physics_attention_bias.dim() != 3:
             raise ValueError(
@@ -219,15 +205,6 @@ class PhysicsAwareAttention(nn.Module):
                 f"[B, N, N] = [{batch_size}, {seq_len}, {seq_len}] to match "
                 f"the input `x`, got {tuple(physics_attention_bias.shape)}."
             )
-
-        # [B, N, N] -> [B, 1, N, N] -> [B, num_heads, N, N] -> [B * num_heads, N, N]
-        attn_mask = physics_attention_bias.unsqueeze(1).expand(
-            -1, self.num_heads, -1, -1
-        )
-        attn_mask = attn_mask.reshape(
-            batch_size * self.num_heads, seq_len, seq_len
-        )
-        return attn_mask.to(dtype=physics_attention_bias.dtype)
 
     def forward(
         self,
@@ -245,13 +222,15 @@ class PhysicsAwareAttention(nn.Module):
         physics_attention_bias : torch.Tensor, optional
             Additive pre-softmax attention bias of shape ``[B, N, N]``.
             If ``None`` (default), this module performs ordinary
-            self-attention, numerically identical to
-            ``nn.MultiheadAttention`` with no mask.
+            self-attention, numerically identical to unbiased attention.
         return_attention : bool, optional
-            If ``True``, also return the attention weights, per head
-            (``nn.MultiheadAttention``'s ``average_attn_weights=False``
-            semantics), with shape ``[B, num_heads, N, N]``. Default is
-            ``False``.
+            If ``True``, also return the attention weights, per head, with
+            shape ``[B, num_heads, N, N]``. These are the raw, pre-dropout
+            softmax probabilities (dropout is applied afterward, only to
+            the weights actually used for the output matmul, so it doesn't
+            affect what's returned here). Forces the manual attention path,
+            since the fused SDPA kernel does not expose weights.
+            Default is ``False``.
 
         Returns
         -------
@@ -282,26 +261,31 @@ class PhysicsAwareAttention(nn.Module):
                 f"({self.embed_dim})."
             )
 
-        B, N, D = x.shape
+        if physics_attention_bias is not None:
+            self._validate_physics_bias(physics_attention_bias, batch_size, seq_len)
 
+        B, N, D = x.shape
         H = self.num_heads
         Hd = self.head_dim
 
         # ==========================================================
         # Fast SDPA path:
-        # Used during normal training/inference.
-        # Falls back to the manual implementation when attention
-        # weights are explicitly requested.
+        # Used during normal training/inference. Falls back to the manual
+        # implementation when attention weights are explicitly requested,
+        # or when the attention-shift research metric is being tracked --
+        # both require the actual softmax weights, which the fused SDPA
+        # kernel does not expose.
         # ==========================================================
         use_sdpa = (
-            not return_attention
+            self.use_sdpa
+            and not return_attention
+            and not self.track_attention_shift
             and hasattr(F, "scaled_dot_product_attention")
         )
 
         # ----------------------------
         # Q K V
         # ----------------------------
-
         q = self.q_proj(x)
         k = self.k_proj(x)
         v = self.v_proj(x)
@@ -310,15 +294,8 @@ class PhysicsAwareAttention(nn.Module):
         k = k.view(B, N, H, Hd).transpose(1, 2)
         v = v.view(B, N, H, Hd).transpose(1, 2)
 
-
-        # ----------------------------
-        # logits
-        # ----------------------------
-
-        if self.use_sdpa and use_sdpa:
-
+        if use_sdpa:
             attn_mask = None
-
             if physics_attention_bias is not None:
                 attn_mask = physics_attention_bias.unsqueeze(1).to(q.dtype)
 
@@ -330,80 +307,50 @@ class PhysicsAwareAttention(nn.Module):
                 dropout_p=self.dropout if self.training else 0.0,
                 is_causal=False,
             )
-
             attn_weights = None
 
         else:
-
-            scores = torch.matmul(
-                q.float(),
-                k.transpose(-2, -1).float()
-            )
-
+            # Scores/softmax computed in fp32 for numerical stability
+            # regardless of q/k/v's dtype (matches standard mixed-precision
+            # attention practice).
+            scores = torch.matmul(q.float(), k.transpose(-2, -1).float())
             scores /= math.sqrt(Hd)
 
             if physics_attention_bias is not None:
-
                 scores = scores + physics_attention_bias.unsqueeze(1).float()
 
-            if torch.isnan(scores).any():
-                raise RuntimeError("NaN in scores")
-
-            weights = F.softmax(scores, dim=-1)
-
-            if torch.isnan(weights).any():
-                raise RuntimeError("NaN after softmax")
-
-            # Convert to same dtype as V BEFORE matmul
-            weights = weights.to(v.dtype)
+            weights_fp32 = F.softmax(scores, dim=-1)
 
             # ==========================================================
             # Research Metric: Attention Shift
             # Measures how much the physics prior changes the attention
-            # distribution compared to standard self-attention.
+            # distribution compared to standard self-attention. Computed
+            # from the fp32 softmax output (before any precision-narrowing
+            # cast below) so the metric itself isn't degraded by whatever
+            # dtype v happens to be in.
             # ==========================================================
-            if (
-                self.track_attention_shift
-                and physics_attention_bias is not None
-            ):
+            if self.track_attention_shift and physics_attention_bias is not None:
                 with torch.no_grad():
-
-                    scores_no_bias = (
-                        torch.matmul(
-                            q.float(),
-                            k.transpose(-2, -1).float()
-                        ) / math.sqrt(Hd)
-                    )
-
-                    weights_no_bias = F.softmax(
-                        scores_no_bias,
-                        dim=-1,
-                    )
-
-                    attention_shift = (
-                        weights.float() - weights_no_bias.float()
-                    ).abs().mean()
-
+                    scores_no_bias = torch.matmul(
+                        q.float(), k.transpose(-2, -1).float()
+                    ) / math.sqrt(Hd)
+                    weights_no_bias = F.softmax(scores_no_bias, dim=-1)
+                    attention_shift = (weights_fp32 - weights_no_bias).abs().mean()
                     self.last_attention_shift = attention_shift.detach()
 
-            weights = self.dropout_layer(weights)
+            # Weights returned to the caller (when requested) are the raw,
+            # pre-dropout, fp32 softmax probabilities -- dropout is a
+            # training-time regularization artifact, not part of the
+            # underlying attention distribution, so it shouldn't be baked
+            # into weights someone inspects or visualizes later. The matmul
+            # below still uses the post-dropout, cast weights, so training
+            # behavior is unaffected.
+            attn_weights = weights_fp32 if return_attention else None
 
-            weights = weights.to(v.dtype)
-
-            # ----------------------------
-            # attention output
-            # ----------------------------
+            weights = self.dropout_layer(weights_fp32)
+            weights = weights.to(v.dtype)  # cast once, immediately before the AV matmul
 
             attn_out = torch.matmul(weights, v)
-
-            if ( 
-                self.track_attention_shift
-                and physics_attention_bias is not None
-            ):
-                with torch.no_grad():
-                    attn_no_bias = torch.matmul(weights_no_bias.to(v.dtype), v)
-
-            attn_weights = weights if return_attention else None
 
         attn_out = (
             attn_out.transpose(1, 2)
@@ -442,6 +389,12 @@ if __name__ == "__main__":
     assert out_with_attn.shape == (2, 128, 192)
     assert weights.shape == (2, 4, 128, 128), (
         f"Attention weights shape mismatch: got {tuple(weights.shape)}"
+    )
+
+    attn.track_attention_shift = True
+    _ = attn(x, physics_attention_bias=bias)
+    assert attn.get_attention_shift() is not None, (
+        "Attention-shift metric was not populated when track_attention_shift=True"
     )
 
     print("PhysicsAwareAttention smoke test passed.")
