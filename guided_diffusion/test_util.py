@@ -17,6 +17,7 @@ from torch.utils.data import DataLoader
 
 import lpips
 import matplotlib.pyplot as plt
+from torchmetrics.image import StructuralSimilarityIndexMeasure
 
 from . import logger
 
@@ -128,7 +129,7 @@ def _select_prediction(pred_image, pred_tensor, sample_to_use, best_idx_per_samp
 
 
 def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False, cycle_width=0,
-             log=False, test=False, use_ddim=False, sample_to_use="LAST"):
+             log=False, test=False, use_ddim=False, sample_to_use="LAST", save_images=True):
     """
     Run full validation/test evaluation over `loader`.
 
@@ -149,7 +150,25 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
     if sample_to_use not in _VALID_SAMPLE_MODES:
         raise ValueError(f"Unknown sample_to_use={sample_to_use!r}. Expected one of {_VALID_SAMPLE_MODES}.")
 
+    # Always logged (not gated by `log`), since silently mismatched
+    # use_ddim/cycle_spinning between calls is exactly the kind of bug
+    # that's easy to reintroduce at a call site and hard to notice without
+    # this -- see run_loop()'s baseline vs periodic validation calls.
+    logger.log(
+        f"[evaluate] use_ddim={use_ddim}, cycle_spinning={cycle_spinning}, "
+        f"cycle_width={cycle_width}, sample_to_use={sample_to_use}\n"
+    )
+
     sample_fn = diffusion.p_sample_loop if not use_ddim else diffusion.ddim_sample_loop
+
+    # Trajectory SSIM (per-iteration, used only for MAX-selection and the
+    # diagnostic plot) can use a faster GPU-based SSIM during training-time
+    # validation. The FINAL reported SSIM (img_ssim / net_ssim / CSV) always
+    # stays on skimage, unconditionally -- see the per-sample loop below --
+    # so nothing that gets logged, plotted-as-a-headline-number, or reported
+    # in a paper ever depends on this switch.
+    use_fast_ssim = not test
+    ssim_torch = StructuralSimilarityIndexMeasure(data_range=1.0, reduction='none').to(device) if use_fast_ssim else None
 
     if log:
         sample_mode_messages = {
@@ -298,9 +317,26 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
             best_psnr_per_sample = [0.0] * batch_size
             for b in range(batch_size):
                 idx = batch_idx * loader.batch_size + b
+
+                if use_fast_ssim:
+                    # One GPU call covering all T iterations for this sample,
+                    # instead of T separate calls each forcing a sync via
+                    # .item() -- that per-call pattern is what actually makes
+                    # a "fast" GPU metric end up slower than the CPU version
+                    # for small per-call payloads.
+                    pred_seq = torch.from_numpy(pred_image_np[:, b]).unsqueeze(1).to(device)  # [T, 1, H, W]
+                    clean_rep = (
+                        torch.from_numpy(clean_image_np[b])
+                        .unsqueeze(0).unsqueeze(0).to(device)
+                        .expand(iterations, 1, -1, -1)  # [T, 1, H, W], view-only, no copy
+                    )
+                    all_tensor_ssim[idx, :] = ssim_torch(pred_seq, clean_rep).detach().cpu().numpy()
+
                 for t in range(iterations):
                     all_tensor_psnr[idx, t] = psnr(clean_image_np[b], pred_image_np[t, b], data_range=1)
-                    all_tensor_ssim[idx, t] = ssim(clean_image_np[b], pred_image_np[t, b], data_range=1)
+                    if not use_fast_ssim:
+                        all_tensor_ssim[idx, t] = ssim(clean_image_np[b], pred_image_np[t, b], data_range=1)
+
                 best_psnr_idx_per_sample[b] = int(np.argmax(all_tensor_psnr[idx]))
                 best_psnr_per_sample[b] = all_tensor_psnr[idx, best_psnr_idx_per_sample[b]]
 
@@ -339,14 +375,15 @@ def evaluate(loader, diffusion, model, device, images_dir, cycle_spinning=False,
                 if images_dir is not None:
                     save_filename = os.path.basename(image_filename[i])
 
-                    save_test_images(
-                        os.path.join(images_dir, save_filename),
-                        noisy_image_np[i], pred_image_np[i], clean_image_np[i],
-                    )
-                    save_paper_images(
-                        images_dir, save_filename,
-                        noisy_image_np[i], pred_image_np[i], clean_image_np[i],
-                    )
+                    if save_images:
+                        save_test_images(
+                            os.path.join(images_dir, save_filename),
+                            noisy_image_np[i], pred_image_np[i], clean_image_np[i],
+                        )
+                        save_paper_images(
+                            images_dir, save_filename,
+                            noisy_image_np[i], pred_image_np[i], clean_image_np[i],
+                        )
                     csv_writer.writerow([
                         save_filename,
                         f"{img_psnr[i]:.4f}",

@@ -321,9 +321,10 @@ class TrainLoop:
             self.ddp_model,
             dist_util.dev(),
             images_folder,
-            cycle_spinning=True,
+            cycle_spinning=False,
             cycle_width=self._VALIDATION_CYCLE_WIDTH,
             use_ddim=self.use_ddim,
+            save_images=False,
         )
 
         logger.log(f"\tStep = {self.step:>5},  PSNR: {avg_psnr:5.2f},  SSIM: {avg_ssim:5.3f},  MSE: {mse:2.1e},  Loss: 0.00e+00,  Net training time: {(time.perf_counter() - start_time - net_val_time):.1f}s,  Net validation time: {net_val_time:.1f}s")
@@ -395,17 +396,18 @@ class TrainLoop:
                     self.ddp_model,
                     dist_util.dev(),
                     images_folder,
-                    cycle_spinning=True,
+                    cycle_spinning=False,
                     cycle_width=self._VALIDATION_CYCLE_WIDTH,
                     # Use the same sampler as the pre-training baseline call
                     # above. Previously omitted here, so periodic validation
                     # silently always used DDPM regardless of self.use_ddim,
                     # making PSNR/SSIM curves inconsistent across training.
                     use_ddim=self.use_ddim,
+                    save_images=False,
                 )
                 net_val_time += time.perf_counter() - val_time
 
-                logger.log(f"\tStep = {self.step:>5},  PSNR: {avg_psnr:5.2f},  SSIM: {avg_ssim:5.3f},  MSE: {mse:2.1e},  Loss: {(net_loss/(((self.step-1) % self.log_interval)+1)):2.2e},  Net training time: {(time.perf_counter() - start_time - net_val_time):.1f}s,  Net validation time: {net_val_time:.1f}s")
+                logger.log(f"\tStep = {self.step:>5},  PSNR: {avg_psnr:5.2f},  SSIM: {avg_ssim:5.3f},  MSE: {mse:2.1e},  wLoss: {(net_loss/(((self.step-1) % self.log_interval)+1)):2.2e},  Net training time: {(time.perf_counter() - start_time - net_val_time):.1f}s,  Net validation time: {net_val_time:.1f}s")
 
                 if best_psnr < avg_psnr:
                     best_psnr = avg_psnr
@@ -443,8 +445,31 @@ class TrainLoop:
 
         for i in range(0, batch.shape[0], self.microbatch):
             micro = batch[i: i + self.microbatch].to(dist_util.dev())
+
+            def _slice_microbatch(v, start, end, device):
+                # Handles a plain tensor, or a tuple/list of tensors (e.g.
+                # struct_tensors' three scales), slicing every tensor found
+                # down to this microbatch's [start:end] range and moving it
+                # to `device`. Previously only plain torch.Tensor values were
+                # sliced here (`isinstance(v, torch.Tensor)`); anything else
+                # -- specifically struct_tensors, the one tuple-valued
+                # conditioning item -- fell into the `else v` branch and was
+                # passed through completely unsliced, at the full original
+                # batch size. With microbatch < batch_size (the default,
+                # microbatch=1), this meant every microbatch's struct_tensors
+                # stayed at full batch size while every other conditioning
+                # tensor was correctly sliced down -- exactly the
+                # "[1] at entry 0 and [4] at entry 2" torch.stack mismatch
+                # inside UNetModel.forward's adaptive condition fusion.
+                if torch.is_tensor(v):
+                    return v[start:end].to(device)
+                if isinstance(v, (tuple, list)):
+                    sliced = [_slice_microbatch(t, start, end, device) for t in v]
+                    return tuple(sliced) if isinstance(v, tuple) else sliced
+                return v
+
             micro_cond = {
-                k: v[i: i + self.microbatch].to(dist_util.dev()) if isinstance(v, torch.Tensor) else v
+                k: _slice_microbatch(v, i, i + self.microbatch, dist_util.dev())
                 for k, v in cond.items()
             }
             last_batch = (i + self.microbatch) >= batch.shape[0]

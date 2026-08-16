@@ -858,6 +858,10 @@ class UNetModel(nn.Module):
 
         if len(condition_embeddings) > 0:
 
+            #for name, emb in zip(condition_names, condition_embeddings):
+            #    print(f"{name:10s} {tuple(emb.shape)}")
+            #print("==========================================")
+
             scores = torch.stack(
                 [
                     self.condition_gate(e.float()).squeeze(-1)
