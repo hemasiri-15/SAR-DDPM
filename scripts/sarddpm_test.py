@@ -9,7 +9,7 @@ from datetime import datetime
 import torch
 from torch.utils.data import DataLoader
 
-from .datasets import SynthSARDataset
+from structdiff.data.wavelet_dataset import WaveletDataset
 from .parameters import default_args
 from guided_diffusion.test_util import (
     evaluate,
@@ -82,7 +82,7 @@ def main():
     model.to(dist_util.dev())
     
     logger.log("Creating data loader...")
-    test_dataset = SynthSARDataset(args.test_dir, train=False, num_channels=training_args['in_channels'], crop_size=(training_args['large_size'], training_args['large_size']), length=args.test_length, seed=args.seed)
+    test_dataset = WaveletDataset(args.test_dir, train=False, num_channels=training_args['in_channels'], crop_size=(training_args['large_size'], training_args['large_size']), length=args.test_length, seed=args.seed)
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=1)
 
     logger.log("Loading model from checkpoint:" + test_checkpoint)
