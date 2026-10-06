@@ -128,6 +128,7 @@ def main():
         use_ddim=args.use_ddim,
         learn_sigma=args.learn_sigma,
         profile=args.profile,
+        gate_only_physics=args.gate_only_physics,
     ).run_loop()
 
 
@@ -168,6 +169,8 @@ def create_argparser():
         class_cond = False,
         compile_model=True,
         profile=False,
+        gate_only_physics=False,
+
         # Default True to preserve this repo's prior behavior, where cuDNN
         # benchmarking was unconditionally enabled regardless of this flag's
         # value. The flag is now actually wired to torch.backends.cudnn.benchmark

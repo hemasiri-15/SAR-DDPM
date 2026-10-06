@@ -82,6 +82,7 @@ class TrainLoop:
         use_ddim=False,
         learn_sigma=True,
         profile=False,
+        gate_only_physics=False,
     ):
         self.model = model
         self.diffusion = diffusion
@@ -106,6 +107,8 @@ class TrainLoop:
         self.use_ddim = use_ddim
         self.learn_sigma = learn_sigma
         self.profile = profile
+        self.gate_only_physics = gate_only_physics
+        self.lambda_balance = 0.0
 
         self.step = 0
 
@@ -131,8 +134,55 @@ class TrainLoop:
             fp16_scale_growth=fp16_scale_growth,
         )
 
+        # --------------------------------------------------------------
+        # R1: Physics-gate-only adaptation
+        #
+        # Keep the entire pretrained B0 network fixed and optimize only
+        # the newly introduced wavelet/spectral physics-relation gates.
+        #
+        # IMPORTANT:
+        # Look / Struct / MSStruct / Spectral / Wavelet conditioning
+        # remains ACTIVE in the forward pass. Their parameters are simply
+        # frozen so this experiment isolates the new attention mechanism.
+        # --------------------------------------------------------------
+        gate_only_physics = getattr(self, "gate_only_physics", False)
+
+        if gate_only_physics:
+            for p in self.model.parameters():
+                p.requires_grad = False
+
+            trainable_gates = []
+
+            for name, p in self.model.named_parameters():
+                if name.endswith(
+                    "physics_attention_bias_builder.physics_bias_fusion.alpha_wavelet"
+                ) or name.endswith(
+                    "physics_attention_bias_builder.physics_bias_fusion.alpha_spectral"
+                ):
+                    p.requires_grad = True
+                    trainable_gates.append((name, p))
+
+            if len(trainable_gates) != 2:
+                raise RuntimeError(
+                    "R1 gate-only mode expected exactly 2 trainable physics gates, "
+                    f"found {len(trainable_gates)}: "
+                    f"{[name for name, _ in trainable_gates]}"
+                )
+
+            logger.log(
+                "R1 gate-only physics adaptation enabled."
+            )
+            for name, p in trainable_gates:
+                logger.log(
+                    f"  TRAINABLE: {name} = {p.detach().item():.10f}"
+                )
+
+            optimizer_params = [p for _, p in trainable_gates]
+        else:
+            optimizer_params = self.mp_trainer.master_params
+
         self.opt = AdamW(
-            self.mp_trainer.master_params, lr=self.lr, weight_decay=self.weight_decay
+            optimizer_params, lr=self.lr, weight_decay=self.weight_decay
         )
 
         if torch.cuda.is_available():
@@ -545,6 +595,19 @@ class TrainLoop:
                 )
                 loss = loss + self.lambda_ssim * ssim_loss
                 logger.logkv_mean("ssim_loss", ssim_loss.item())
+
+            # ── Gate Load-Balancing Loss ──────────────────────────────
+            _gate_model = self.ddp_model.module if hasattr(self.ddp_model, "module") else self.ddp_model
+            gate_weights = getattr(_gate_model, "last_condition_weights_tensor", None)
+            if self.lambda_balance > 0.0 and gate_weights is not None and gate_weights.shape[-1] > 1:
+                K = gate_weights.shape[-1]
+                mean_weight_per_branch = gate_weights.float().mean(dim=0)  # [K], sums to 1.0 exactly
+                # CV² = var / mean²; mean is always exactly 1/K here (softmax
+                # rows sum to 1), so var/mean² simplifies to var * K² with no
+                # division needed.
+                balance_loss = mean_weight_per_branch.var(unbiased=False) * (K ** 2)
+                loss = loss + self.lambda_balance * balance_loss
+                logger.logkv_mean("balance_loss", balance_loss.item())
             # ──────────────────────────────────────────────────────────
 
             net_loss += loss

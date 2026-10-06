@@ -179,8 +179,8 @@ class PhysicsAttentionBiasBuilder(nn.Module):
     def forward(
         self,
         struct_tensor: torch.Tensor,
-        wavelet_relation: Optional[torch.Tensor] = None,
-        spectral_relation: Optional[torch.Tensor] = None,
+        wavelet_features: Optional[torch.Tensor] = None,
+        spectral_features: Optional[torch.Tensor] = None,
         confidence_relation: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Build the physics attention bias from a raw structure tensor.
@@ -222,7 +222,39 @@ class PhysicsAttentionBiasBuilder(nn.Module):
         # ==========================================================
         self.last_orientation_relation = orientation_relation.detach()
 
-        # 3. orientation_relation (+ any optional relation matrices) ->
+        # 3. Build optional modality relations at exactly the same
+        #    spatial resolution as the orientation relation.
+        target_hw = orientation.shape[-2:]
+
+        wavelet_relation = None
+        if wavelet_features is not None:
+            wavelet_relation = self.physics_relation_matrix.wavelet_relation(
+                wavelet_features,
+                target_hw=target_hw,
+            )
+
+        spectral_relation = None
+        if spectral_features is not None:
+            spectral_relation = self.physics_relation_matrix.spectral_relation(
+                spectral_features,
+                target_hw=target_hw,
+            )
+
+        # 3b. Convert structure-tensor coherence into a pairwise
+        #     confidence relation.
+        #
+        # Coherence is a deterministic, training-time physical descriptor
+        # derived directly from the structure tensor. High coherence means
+        # the local gradient energy is strongly concentrated along one
+        # direction, while low coherence indicates weak/directionless
+        # structure. Pairwise similarity therefore provides a physically
+        # meaningful confidence relation without using inference-only
+        # uncertainty estimates.
+        confidence_relation = self.physics_relation_matrix._feature_relation(
+            coherence
+        )
+
+        # 4. orientation_relation + optional modality relations ->
         #    fused, gated physics attention bias.
         physics_attention_bias = self.physics_bias_fusion(
             orientation_relation,

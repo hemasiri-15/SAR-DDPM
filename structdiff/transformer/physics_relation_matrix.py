@@ -92,6 +92,7 @@ from typing import Tuple
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class PhysicsRelationMatrix(nn.Module):
@@ -132,6 +133,65 @@ class PhysicsRelationMatrix(nn.Module):
 
     def __init__(self) -> None:
         super().__init__()
+
+    @staticmethod
+    def _feature_relation(features: torch.Tensor) -> torch.Tensor:
+        """Build pairwise cosine similarity [B, N, N] from [B, C, H, W]."""
+        if features.dim() != 4:
+            raise ValueError(
+                f"Expected [B, C, H, W], got {tuple(features.shape)}."
+            )
+
+        b, c, h, w = features.shape
+        n = h * w
+
+        # Keep relation construction in FP32 for numerical stability.
+        f = features.float().reshape(b, c, n).transpose(1, 2).contiguous()
+        f = F.normalize(f, p=2, dim=-1, eps=1e-6)
+
+        return torch.bmm(f, f.transpose(1, 2))
+
+    def wavelet_relation(
+        self,
+        wavelet_features: torch.Tensor,
+        target_hw: tuple[int, int],
+    ) -> torch.Tensor:
+        """Build pairwise cosine relation from wavelet features."""
+        if wavelet_features.dim() != 4:
+            raise ValueError(
+                f"Expected wavelet_features [B,C,H,W], "
+                f"got {tuple(wavelet_features.shape)}."
+            )
+
+        features = F.interpolate(
+            wavelet_features.float(),
+            size=target_hw,
+            mode="bilinear",
+            align_corners=False,
+        )
+
+        return self._feature_relation(features)
+
+    def spectral_relation(
+        self,
+        spectral_features: torch.Tensor,
+        target_hw: tuple[int, int],
+    ) -> torch.Tensor:
+        """Build pairwise cosine relation from spectral features."""
+        if spectral_features.dim() != 4:
+            raise ValueError(
+                f"Expected spectral_features [B,C,H,W], "
+                f"got {tuple(spectral_features.shape)}."
+            )
+
+        features = F.interpolate(
+            spectral_features.float(),
+            size=target_hw,
+            mode="bilinear",
+            align_corners=False,
+        )
+
+        return self._feature_relation(features)
 
     def forward(
         self, orientation: torch.Tensor, coherence: torch.Tensor

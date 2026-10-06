@@ -27,8 +27,8 @@ lpips_model = lpips.LPIPS(net='alex').cuda()
 
 from tqdm import tqdm
 
-from datasets import SynthSARDataset
-from parameters import default_args
+from scripts.datasets import SynthSARDataset
+from scripts.parameters import default_args
 from guided_diffusion import dist_util, logger
 from guided_diffusion.script_util import (
     sr_model_and_diffusion_defaults,
@@ -40,13 +40,14 @@ from guided_diffusion.test_util import evaluate_sar
 
 # Training or testing?
 # This will determine which set of arguments to load from ./scripts/parameters.py
-test = False
+test = True
 
 # How many iterations does the first DDPM model use?
 num_channels = 100
 
 # Determine where the pretrained SAR-DDPM log folder is
-ddpm_log_path = "./logs/DSIFN_2024-12-22-23-05-51/"
+ddpm_log_path = "./logs/train_2026-08-31-09-49-05/"
+#ddpm_log_path = "./logs/DSIFN_2024-12-22-23-05-51/"
 
 # Trained U-Net model path
 unet_model_checkpoint = None #"./logs/DSIFN_new_2024-12-26-01-15-16/model_best.pt"
@@ -120,6 +121,19 @@ def main():
     model, diffusion = sr_create_model_and_diffusion(
         **{k: args_dict[k] if k in args_dict.keys() else (ddpm_training_args[k] if k in ddpm_training_args.keys() else None) for k in sr_model_and_diffusion_defaults().keys()}
     )
+    print("\n" + "=" * 80)
+    print("DIFFUSION EVALUATION CONFIG")
+    print("=" * 80)
+    print("test checkpoint       =", test_checkpoint)
+    print("use_ddim              =", args.use_ddim)
+    print("timestep_respacing    =", args.timestep_respacing)
+    print("diffusion_steps       =", args.diffusion_steps)
+    print("diffusion class       =", type(diffusion).__name__)
+    print("actual num_timesteps  =", diffusion.num_timesteps)
+    print("original_num_steps    =", getattr(diffusion, "original_num_steps", "N/A"))
+    print("timestep_map length   =", len(diffusion.timestep_map) if hasattr(diffusion, "timestep_map") else "N/A")
+    print("=" * 80 + "\n")
+
     model.to(dist_util.dev())
     
     logger.log("Creating data loader...")
@@ -137,7 +151,7 @@ def main():
     dict_load = dist_util.load_state_dict(test_checkpoint, map_location=dist_util.dev())
     model.load_state_dict(dict_load, strict=False)
     if ddpm_training_args['use_fp16']:
-        model.convert_to_fp16()
+        model.convert_to_fp32()
 
     if ddpm_training_args['large_size'] == 512:
         channel_mult = (1, 1, 2, 2, 4, 4)
@@ -168,18 +182,21 @@ def main():
         num_heads_upsample=ddpm_training_args['num_heads_upsample'],
         use_scale_shift_norm=ddpm_training_args['use_scale_shift_norm'],
         resblock_updown=ddpm_training_args['resblock_updown'],
-        use_fp16=ddpm_training_args['use_fp16'],
+        #use_fp16=ddpm_training_args['use_fp16'],
+        use_fp16=False,
     )
 
     if unet_model_checkpoint:
         unet_model.load_state_dict(torch.load(unet_model_checkpoint))
 
     unet_model.to(dist_util.dev())
+    unet_model.convert_to_fp32()
 
     logger.log("Beginning testing...")
     model.eval()
 
-    num_steps = int(args.timestep_respacing) if isinstance(args.timestep_respacing, str) else sum(args.timestep_respacing)
+    # Direct final-image evaluation: sampler trajectory length is not used for metrics.
+    num_steps = 1
 
     t = torch.tensor([1.0] * args.batch_size, device=dist_util.dev())
 
@@ -214,7 +231,7 @@ def main():
                 model_kwargs = {'noisy': noisy_tensor}
 
                 with torch.no_grad():
-                    pred_tensor = diffusion.p_sample_loop(
+                    pred_tensor = (diffusion.ddim_sample_loop if use_ddim else diffusion.p_sample_loop)(
                                     model,
                                     noisy_tensor.shape,
                                     clip_denoised=True,
@@ -295,9 +312,11 @@ def main():
             e += 1
 
     else:
-        unet_model.convert_to_fp16()
+        if ddpm_training_args['use_fp16']:
+            model.convert_to_fp16()
+
         unet_model.eval()
-        avg_psnr, avg_ssim, _, _ = evaluate(test_loader, diffusion, model, dist_util.dev(), images_folder, num_steps, num_channels, unet_model, args.batch_size, test=True, log=True)
+        avg_psnr, avg_ssim, _, _ = evaluate(test_loader, diffusion, model, dist_util.dev(), images_folder, num_steps, num_channels, unet_model, args.batch_size, test=True, log=True, use_ddim=args.use_ddim)
         
         # Log average results
         logger.log("\nTesting complete")
@@ -318,8 +337,8 @@ def main():
         logger.log("Validation dataset: " + training_args['val_dir'])
         logger.log("Testing dataset: " + args.test_dir)
         logger.log("Cycle spinning: " + str(args.cycle_spinning))
-        logger.log("DDPM model:" + test_checkpoint)
-        logger.log("UNet model:" + unet_model_checkpoint)
+        logger.log("DDPM model: " + str(test_checkpoint))
+        logger.log("UNet model: " + str(unet_model_checkpoint))
         logger.log("Args: " + str(args))
         logger.log("Training args: " + str(training_args) + "\n")
 
@@ -341,7 +360,7 @@ def main():
 
             return unet_model(torch.cat((noisy_tensor, pred_tensor), dim=1), t)
 
-        evaluate_sar(sar_model, dist_util.dev(), training_args['in_channels'], training_args['large_size'])
+        logger.log("Skipping legacy SEN12 SAR evaluation; using direct DDPM/DDIM evaluation.")
 
 
 def create_argparser(test=False):
@@ -391,7 +410,16 @@ def get_most_recent_log_folder(logs_dir):
     folders = [f for f in os.listdir(logs_dir) if os.path.isdir(os.path.join(logs_dir, f))]
     if len(folders) == 0:
         raise FileNotFoundError(f"No log folders found in {logs_dir}")
-    date_folders = [(folder, datetime.datetime.strptime(folder.split('_')[-1], '%Y-%m-%d-%H-%M-%S')) for folder in folders]
+    date_folders = []
+    for folder in folders:
+        try:
+            dt = datetime.datetime.strptime(
+                folder.split('_')[-1],
+                '%Y-%m-%d-%H-%M-%S'
+            )
+            date_folders.append((folder, dt))
+        except ValueError:
+            continue
     most_recent_folder = max(date_folders, key=lambda x: x[1])[0]
     return os.path.join(logs_dir, most_recent_folder)
 
@@ -467,290 +495,311 @@ def save(mp_trainer, latest=False):
 
 
 
-def evaluate(loader, diffusion, model, device, images_dir, num_steps, num_channels, unet_model, batch_size, cycle_spinning=False, cycle_width=0, log=False, test=False):
-    unet_model.eval()
+def evaluate(
+    loader,
+    diffusion,
+    model,
+    device,
+    images_dir,
+    num_steps,
+    num_channels,
+    unet_model,
+    batch_size,
+    cycle_spinning=False,
+    cycle_width=0,
+    log=False,
+    test=False,
+    use_ddim=False,
+):
+    """
+    Canonical direct DDPM/DDIM evaluation.
 
-    t = torch.tensor([1.0] * batch_size, device=dist_util.dev())
+    DDIM returns:
+        [B, C, H, W]
 
-    net_psnr = 0.0 # sum PSNR metrics
-    net_ssim = 0.0 # sum SSIM metrics
-    net_mse = 0.0
+    DDPM p_sample_loop may return:
+        [T, B, C, H, W]
+
+    We always reduce both to the final prediction:
+        [B, C, H, W]
+
+    The old evaluator incorrectly treated DDIM as a DDPM trajectory.
+    """
+
+    del num_steps
+    del num_channels
+    del unet_model
+    del cycle_width
+
+    model.eval()
+
+    net_psnr = 0.0
+    net_ssim = 0.0
     net_lpips = 0.0
-    net_vifp = 0.0
+    net_time = 0.0
+    total_images = 0
 
-    net_time = 0.0 # sum evaluation times
-    
+    if cycle_spinning:
+        raise ValueError(
+            "cycle_spinning=True is disabled in the corrected direct "
+            "DDPM/DDIM evaluator. Use cycle_spinning=False for the "
+            "standardized evaluation."
+        )
+
+    def sample_final(noisy_tensor, model_kwargs):
+        sample_fn = (
+            diffusion.ddim_sample_loop
+            if use_ddim
+            else diffusion.p_sample_loop
+        )
+
+        sample = sample_fn(
+            model,
+            noisy_tensor.shape,
+            clip_denoised=True,
+            model_kwargs=model_kwargs,
+        )
+
+        if sample.ndim == 4:
+            # DDIM: [B, C, H, W]
+            pred = sample
+
+        elif sample.ndim == 5:
+            # DDPM trajectory: [T, B, C, H, W]
+            pred = sample[-1]
+
+        else:
+            raise RuntimeError(
+                f"Unexpected diffusion sample shape: {tuple(sample.shape)}"
+            )
+
+        if pred.shape[0] != noisy_tensor.shape[0]:
+            raise RuntimeError(
+                "Batch dimension mismatch: "
+                f"prediction={tuple(pred.shape)}, "
+                f"input={tuple(noisy_tensor.shape)}"
+            )
+
+        if not torch.isfinite(pred).all():
+            raise RuntimeError("Diffusion prediction contains NaN/Inf.")
+
+        return pred.float()
+
     with torch.no_grad():
-        batch = next(iter(loader))
-        noisy_tensor = batch[1]
-        itr_indexes = list(range(num_steps))
 
-        metric_shape = (len(loader) * noisy_tensor.shape[0], len(itr_indexes))
-        all_tensor_psnr = np.empty(metric_shape)
-        all_tensor_ssim = np.empty(metric_shape)
-        all_tensor_vifp = np.empty(metric_shape)
-        all_tensor_lpips = np.empty(metric_shape)
-
-        progress_bar = tqdm(loader, desc=f"[{'Test' if test else 'Validation'}] PSNR: 00.00/00.00, SSIM: 0.000/0.000", unit='batch')
-
+        progress_bar = tqdm(
+            loader,
+            desc=(
+                f"[{'Test' if test else 'Validation'}] "
+                "PSNR: 00.00, SSIM: 0.000, LPIPS: 0.000"
+            ),
+            unit="batch",
+        )
 
         for batch_idx, data_tuple in enumerate(progress_bar):
-            clean_tensor, noisy_tensor, image_filename = data_tuple[:3]
+
+            clean_tensor, noisy_tensor, image_filename, conditions = data_tuple
+
             clean_tensor = clean_tensor.to(device)
             noisy_tensor = noisy_tensor.to(device)
-            
-            # Reformat the images for metrics
-            clean_image = ((clean_tensor + 1.0)* 127.5).clamp(0, 255.0)
-            clean_image = torch.round(torch.mean(clean_image, dim=1)) / 255.0
+
+            current_batch_size = clean_tensor.shape[0]
+
+            # ---------------------------------------------------------
+            # Move conditioning tensors to device.
+            # ---------------------------------------------------------
+            model_conditions = {}
+
+            for key, value in conditions.items():
+
+                if isinstance(value, torch.Tensor):
+                    model_conditions[key] = value.to(device)
+
+                elif isinstance(value, (tuple, list)):
+                    model_conditions[key] = tuple(
+                        v.to(device) if isinstance(v, torch.Tensor) else v
+                        for v in value
+                    )
+
+                else:
+                    model_conditions[key] = value
+
+            # ---------------------------------------------------------
+            # Ground truth -> grayscale [B,H,W]
+            # ---------------------------------------------------------
+            clean_image = (
+                ((clean_tensor + 1.0) * 127.5)
+                .clamp(0, 255.0)
+            )
+
+            clean_image = (
+                torch.round(torch.mean(clean_image, dim=1)) / 255.0
+            )
+
             clean_image = clean_image.contiguous()
 
-            batch_size = clean_tensor.shape[0]
-            
+            # ---------------------------------------------------------
+            # Sample final DDPM/DDIM prediction.
+            # ---------------------------------------------------------
             batch_start = time.perf_counter()
-            
-            if (cycle_spinning):
-                first = True
-                [_, _, num_rows, num_cols] = noisy_tensor.size()
-                val_inputv = torch.empty_like(noisy_tensor).to(device)
 
-                # Get number of cycle spins
-                N = int(np.ceil(num_rows / cycle_width) * np.ceil(num_cols / cycle_width))
+            model_kwargs = {
+                "noisy": noisy_tensor,
+                **model_conditions,
+            }
 
-                # For each cycle (in both directions)
-                for row in range(0, num_rows, cycle_width):
-                    for col in range(0, num_cols, cycle_width):
-                        # Execute the cycle spin
-                        val_inputv[:,:,:row ,:col ] = noisy_tensor[:,:, num_rows-row:, num_cols-col:]
-                        val_inputv[:,:, row:, col:] = noisy_tensor[:,:,:num_rows-row ,:num_cols-col ]
-                        val_inputv[:,:, row:,:col ] = noisy_tensor[:,:,:num_rows-row , num_cols-col:]
-                        val_inputv[:,:,:row , col:] = noisy_tensor[:,:, num_rows-row:,:num_cols-col ]
+            pred_tensor = sample_final(
+                noisy_tensor=noisy_tensor,
+                model_kwargs=model_kwargs,
+            )
 
-                        model_kwargs = {'noisy': val_inputv}
-
-                        # Get the predicted clean image
-                        sample = diffusion.p_sample_loop(
-                                model,
-                                val_inputv.shape,
-                                clip_denoised=True,
-                                model_kwargs=model_kwargs,
-                            )
-
-                        # Unspin the image and add to the averaged image
-                        if (first):
-                            pred_tensor = (1.0/N)*sample
-                            first = False
-                        else:
-                            pred_tensor[:,:,:, num_rows-row:, num_cols-col:] = pred_tensor[:,:,:, num_rows-row:, num_cols-col:] + (1.0/N)*sample[:,:,:row ,:col ]
-                            pred_tensor[:,:,:,:num_rows-row ,:num_cols-col ] = pred_tensor[:,:,:,:num_rows-row ,:num_cols-col ] + (1.0/N)*sample[:,:, row:, col:]
-                            pred_tensor[:,:,:,:num_rows-row , num_cols-col:] = pred_tensor[:,:,:,:num_rows-row , num_cols-col:] + (1.0/N)*sample[:,:, row:,:col ]
-                            pred_tensor[:,:,:, num_rows-row:,:num_cols-col ] = pred_tensor[:,:,:, num_rows-row:,:num_cols-col ] + (1.0/N)*sample[:,:,:row , col:]
-
-            else:
-                # Otherwise, get the predicted clean image as normal
-                model_kwargs = {'noisy': noisy_tensor}
-
-                pred_tensor = diffusion.p_sample_loop(
-                                model,
-                                noisy_tensor.shape,
-                                clip_denoised=True,
-                                model_kwargs=model_kwargs,
-                            )
-                
-            # Find the elapsed time
             elapsed_time = time.perf_counter() - batch_start
             net_time += elapsed_time
 
-            # if not test:
-            #     pred_tensor = torch.unsqueeze(pred_tensor[-1], dim=0)
+            # ---------------------------------------------------------
+            # Prediction -> grayscale [B,H,W]
+            # ---------------------------------------------------------
+            pred_image = (
+                ((pred_tensor + 1.0) * 127.5)
+                .clamp(0, 255.0)
+            )
 
-            pred_tensor = pred_tensor[itr_indexes]
-            iterations = pred_tensor.shape[0]
+            pred_image = (
+                torch.round(torch.mean(pred_image, dim=1)) / 255.0
+            )
 
-            pred_image = ((pred_tensor + 1.0)* 127.5).clamp(0, 255.0)
-            pred_image = torch.round(torch.mean(pred_image, dim=2)) / 255.0
             pred_image = pred_image.contiguous()
 
-            for b in range(batch_size):
-                all_tensor_lpips[batch_idx * batch_size + b] = compute_lpips_batch(clean_image[b].repeat(iterations,1,1) * 2.0 - 1.0, pred_image[:,b] * 2.0 - 1.0)
+            # ---------------------------------------------------------
+            # Metrics.
+            # ---------------------------------------------------------
+            clean_np = clean_image.cpu().numpy()
+            pred_np = pred_image.cpu().numpy()
 
-            pred_image_np = pred_image.cpu().numpy()
-            clean_image_np = clean_image.cpu().numpy()
+            img_psnr = []
+            img_ssim = []
 
-            max_psnr_index = [0] * batch_size
-            max_psnr = [0.0] * batch_size
-            for b in range(batch_size):
-                idx = batch_idx * batch_size + b
-                for i in range(iterations):
-                    all_tensor_psnr[idx,i] = psnr(clean_image_np[b], pred_image_np[i,b])
-                    all_tensor_ssim[idx,i] = ssim(clean_image_np[b], pred_image_np[i,b], data_range=1)
-                    # if test:
-                    #     all_tensor_vifp[idx,i] = vifp(clean_image_np[b], pred_image[i,b])
+            for b in range(current_batch_size):
 
-                max_psnr_index[b] = np.argmax(all_tensor_psnr[idx,:])
-                max_psnr[b] = all_tensor_psnr[idx, max_psnr_index[b]]
-                
-            pred_tensor = pred_tensor.transpose(0,1).float()
-            pred_tensor = pred_tensor[:, -1*num_channels:]
-            shape = pred_tensor.shape
-            pred_tensor = pred_tensor.contiguous().view(shape[0], shape[1]*shape[2], shape[3], shape[4])
+                p = psnr(
+                    clean_np[b],
+                    pred_np[b],
+                )
 
-            start_time = time.perf_counter()
-            output = unet_model(torch.cat((noisy_tensor, pred_tensor), dim=1), t)
-            elapsed_time = time.perf_counter() - start_time
-            net_time += elapsed_time
-            output = torch.mean(output, dim=1)
+                s = ssim(
+                    clean_np[b],
+                    pred_np[b],
+                    data_range=1,
+                )
 
-            output_image = ((output + 1.0)* 127.5).clamp(0, 255.0)
-            output_image = torch.round(output_image) / 255.0
-            output_image = output_image.contiguous()
+                img_psnr.append(float(p))
+                img_ssim.append(float(s))
 
-            pred_image = output_image
-                
-            pred_image_np = pred_image.cpu().numpy()
-            clean_image_np = clean_image.cpu().numpy()
+            img_lpips = compute_lpips_batch(
+                clean_image * 2.0 - 1.0,
+                pred_image * 2.0 - 1.0,
+            )
 
-            img_psnr = [0.0]*batch_size
-            img_ssim = [0.0]*batch_size
-            img_vifp = [0.0]*batch_size
+            batch_psnr = sum(img_psnr) / current_batch_size
+            batch_ssim = sum(img_ssim) / current_batch_size
+            batch_lpips = sum(img_lpips) / current_batch_size
 
-            for b in range(batch_size):
-                img_psnr[b] = psnr(clean_image_np[b], pred_image_np[b])
-                img_ssim[b] = ssim(clean_image_np[b], pred_image_np[b], data_range=1)
-                # img_vifp[b] = vifp(clean_image_np[b], pred_image_np[b])
-            img_lpips = compute_lpips_batch(clean_image * 2.0 - 1.0, pred_image * 2.0 - 1.0)
-            
-            noisy_image = ((noisy_tensor + 1.0)* 127.5).clamp(0, 255.0)
-            noisy_image = torch.round(torch.mean(noisy_image, dim=1)) / 255.0
-            noisy_image = noisy_image.contiguous()
+            net_psnr += batch_psnr * current_batch_size
+            net_ssim += batch_ssim * current_batch_size
+            net_lpips += batch_lpips * current_batch_size
+            total_images += current_batch_size
 
-            noisy_image_np = noisy_image.cpu().numpy()
-            
-            clean_image_np *= 255.0
-            noisy_image_np *= 255.0
-            pred_image_np *= 255.0
+            # ---------------------------------------------------------
+            # Save images.
+            # ---------------------------------------------------------
+            if images_dir is not None:
 
-            for i in range(batch_size):
-                # Save clean and predicted clean images
-                if (images_dir is not None):
-                    save_filename = os.path.basename(image_filename[i])
-                    save_filename = os.path.join(images_dir, save_filename)
-                    save_test_images(save_filename, noisy_image_np[i], pred_image_np[i], clean_image_np[i])
+                clean_save = clean_np * 255.0
 
-                if log:
-                    num_digits = int(math.log10(len(loader))) + 1 if len(loader) != 0 else 1
+                noisy_image = (
+                    ((noisy_tensor + 1.0) * 127.5)
+                    .clamp(0, 255.0)
+                )
 
-                    status = f"[{(batch_idx+1):>{num_digits}d}/{len(loader)}]  "
-                    status += f"PSNR: {img_psnr[i]:5.2f} dB,  "
-                    status += f"SSIM: {img_ssim[i]:5.3f},  "
-                    status += f"Max PSNR: {max_psnr[i]:5.2f} at {max_psnr_index[i]:2d}  |  "
-                    status += f"[{elapsed_time/batch_size:3.1f}s]  {os.path.basename(image_filename[i])}"
-                    logger.log(status)
-                    
-                    logger.logkv('Time', elapsed_time/batch_size)
-                    logger.logkv('PSNR', img_psnr[i])
-                    logger.logkv('SSIM', img_ssim[i])
-                    logger.logkv('LPIPS', img_lpips[i])
-                    logger.logkv('VIFP', img_vifp[i])
-                    logger.dumpkvs()
+                noisy_image = (
+                    torch.round(torch.mean(noisy_image, dim=1))
+                    .cpu()
+                    .numpy()
+                )
 
-            batch_psnr = sum(img_psnr) / batch_size
-            batch_ssim = sum(img_ssim) / batch_size
-            batch_lpips = sum(img_lpips) / batch_size
-            net_psnr += batch_psnr
-            net_ssim += batch_ssim
-            net_lpips += batch_lpips
+                pred_save = pred_np * 255.0
+                noisy_save = noisy_image
 
+                for b in range(current_batch_size):
+
+                    save_filename = os.path.basename(
+                        image_filename[b]
+                    )
+
+                    save_filename = os.path.join(
+                        images_dir,
+                        save_filename,
+                    )
+
+                    save_test_images(
+                        save_filename,
+                        noisy_save[b].astype(np.uint8),
+                        pred_save[b].astype(np.uint8),
+                        clean_save[b].astype(np.uint8),
+                    )
+
+            # ---------------------------------------------------------
+            # Logging.
+            # ---------------------------------------------------------
             if log:
-                batch_vifp = sum(img_vifp) / batch_size
-                net_vifp += batch_vifp
 
-            progress_bar.set_description(desc=f"[{'Test' if test else 'Validation'}] PSNR: {batch_psnr:5.2f}/{(net_psnr/(batch_idx+1)):5.2f}, SSIM: {batch_ssim:5.3f}/{(net_ssim/(batch_idx+1)):5.3f}")
+                num_digits = (
+                    int(math.log10(len(loader))) + 1
+                    if len(loader) != 0
+                    else 1
+                )
+
+                for i in range(current_batch_size):
+
+                    status = (
+                        f"[{(batch_idx + 1):>{num_digits}d}/"
+                        f"{len(loader)}]  "
+                        f"PSNR: {img_psnr[i]:5.2f} dB,  "
+                        f"SSIM: {img_ssim[i]:5.3f},  "
+                        f"LPIPS: {img_lpips[i]:.4f}  |  "
+                        f"{os.path.basename(image_filename[i])}"
+                    )
+
+                    logger.log(status)
+
+            progress_bar.set_description(
+                desc=(
+                    f"[{'Test' if test else 'Validation'}] "
+                    f"PSNR: {batch_psnr:5.2f}/"
+                    f"{net_psnr / total_images:5.2f}, "
+                    f"SSIM: {batch_ssim:5.3f}/"
+                    f"{net_ssim / total_images:5.3f}, "
+                    f"LPIPS: {batch_lpips:.4f}/"
+                    f"{net_lpips / total_images:.4f}"
+                )
+            )
 
         progress_bar.close()
 
-    if not test:
-        unet_model.train()
+    if total_images == 0:
+        raise RuntimeError("Evaluation loader produced zero images.")
 
+    net_psnr /= total_images
+    net_ssim /= total_images
+    net_lpips /= total_images
     net_time /= len(loader)
-    net_psnr /= len(loader)
-    net_ssim /= len(loader)
-    net_lpips /= len(loader)
-    net_mse /= len(loader)
-    
-    if log:
-        net_vifp /= len(loader)
 
-        logger.log(f"\nAverage elapsed time: {net_time:.3f} s")
-        logger.log(f"Average PSNR: {net_psnr:.3f} dB")
-        logger.log(f"Average SSIM: {net_ssim:.3f}")
-        logger.log(f"Average MSE: {net_mse:2.2e}")
-        logger.log(f"Average LPIPS: {net_lpips:.4f}")
-        logger.log(f"Average VIFP: {net_vifp:.4f}")
+    logger.log(f"\nAverage elapsed time: {net_time:.3f} s")
+    logger.log(f"Average PSNR: {net_psnr:.3f} dB")
+    logger.log(f"Average SSIM: {net_ssim:.3f}")
+    logger.log(f"Average LPIPS: {net_lpips:.4f}")
 
-    # Plot the metrics over all DDPM iterations
-    psnr_means = np.mean(all_tensor_psnr, axis=0)
-    max_psnr_index = np.argmax(psnr_means)
-    max_psnr = psnr_means[max_psnr_index]
-    if test:
-        logger.log(f"Average best PSNR: {max_psnr:5.2f} dB with average index of {max_psnr_index}.")
-
-    ssim_means = np.mean(all_tensor_ssim, axis=0)
-    max_ssim_index = np.argmax(ssim_means)
-    max_ssim = ssim_means[max_ssim_index]
-    
-    if test:
-        vifp_means = np.mean(all_tensor_vifp, axis=0)
-        min_vifp_index = np.argmin(vifp_means)
-        min_vifp = vifp_means[min_vifp_index]
-    
-    lpips_means = np.mean(all_tensor_lpips, axis=0)
-    min_lpips_index = np.argmin(lpips_means)
-    min_lpips = lpips_means[min_lpips_index]
-
-    # Create the plot
-    fig, ax1 = plt.subplots(figsize=(12, 6))
-    ax1.plot(itr_indexes, psnr_means, label='PSNR', marker='o', color='blue', markersize=4)
-    ax1.axhline(y=net_psnr, linestyle='--', color='indigo', label=f'AGT PSNR ({net_psnr:5.2f})')
-    ax1.scatter(itr_indexes[max_psnr_index], max_psnr, color='blue', s=50, zorder=5, label='Max PSNR')
-    ax1.set_xlabel('Iteration')
-    ax1.set_ylabel('PSNR (dB)', color='blue')
-    ax1.tick_params(axis='y', labelcolor='blue')
-
-    # Create a second y-axis
-    ax2 = ax1.twinx()
-    ax2.plot(itr_indexes, ssim_means, label='SSIM', marker='o', color='orange', markersize=4)
-    ax2.axhline(y=net_ssim, linestyle='--', color='brown', label=f'AGT SSIM ({net_ssim:4.2f})')
-    ax2.scatter(itr_indexes[max_ssim_index], max_ssim, color='orange', s=50, zorder=5, label='Max SSIM')
-    
-    # if test:
-    #     ax2.plot(itr_indexes, vifp_means, label='VIFP', marker='o', color='green', markersize=4)
-    #     ax2.scatter(itr_indexes[min_vifp_index], min_vifp, color='green', s=50, zorder=5, label='Min VIFP')
-    
-    ax2.plot(itr_indexes, lpips_means, label='LPIPS', marker='o', color='red', markersize=4)
-    ax2.axhline(y=net_lpips, linestyle='--', color='pink', label=f'AGT LPIPS ({net_lpips:4.2f})')
-    ax2.scatter(itr_indexes[min_lpips_index], min_lpips, color='red', s=50, zorder=5, label='Min LPIPS')
-
-    ax2.set_ylabel('SSIM / VIFP / LPIPS', color='black')
-    ax2.set_ylim(0, 0.9)  # Set the maximum y-value
-    ax2.tick_params(axis='y', labelcolor='black')
-
-    lines = ax1.get_lines() + ax2.get_lines()
-    labels = [line.get_label() for line in lines]
-    ax1.legend(lines, labels, loc='upper left', bbox_to_anchor=(1.1, 0.7), title="Legend")
-
-    # Adjust plot to fit the legend
-    plt.tight_layout()
-    fig.subplots_adjust(left=0.1, right=0.75, top=0.9, bottom=0.1)
-
-    # Add title
-    plt.title('Change in PSNR and SSIM per DDPM iteration.')
-
-    # Save the plot as a PNG file
-    plt.savefig(os.path.join(logger.get_dir(), 'PSNR_plot.png'))
-    plt.close(fig)
-
-    return net_psnr, net_ssim, net_time, max_psnr
-
+    return net_psnr, net_ssim, net_time, net_psnr
 
 def compute_lpips_batch(sr_tensors, gt_tensors):
     # Must be pytorch tensors on the GPU between [-1, 1]

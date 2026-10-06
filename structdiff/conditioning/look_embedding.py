@@ -142,7 +142,7 @@ class LookEmbedding(nn.Module):
         # Symmetry between look slots is broken by data, not by init —
         # each embedding row only receives gradients from samples with
         # that specific look count.
-        nn.init.zeros_(self.embedding.weight)
+        nn.init.normal_(self.embedding.weight, mean=0.0, std=0.02)
 
         # ------------------------------------------------------------------
         # Non-trainable lookup buffer: look_count → embedding row index.

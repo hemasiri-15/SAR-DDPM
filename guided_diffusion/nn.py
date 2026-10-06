@@ -151,20 +151,64 @@ class CheckpointFunction(th.autograd.Function):
 
     @staticmethod
     def backward(ctx, *output_grads):
-        ctx.input_tensors = [x.detach().requires_grad_(True) for x in ctx.input_tensors]
+        ctx.input_tensors = [
+            x.detach().requires_grad_(True)
+            for x in ctx.input_tensors
+        ]
+
         with th.enable_grad():
             # Fixes a bug where the first op in run_function modifies the
             # Tensor storage in place, which is not allowed for detach()'d
             # Tensors.
-            shallow_copies = [x.view_as(x) for x in ctx.input_tensors]
+            shallow_copies = [
+                x.view_as(x)
+                for x in ctx.input_tensors
+            ]
             output_tensors = ctx.run_function(*shallow_copies)
-        input_grads = th.autograd.grad(
-            output_tensors,
-            ctx.input_tensors + ctx.input_params,
-            output_grads,
-            allow_unused=True,
+
+        # Only differentiate tensors that actually require gradients.
+        # This is required for gate-only R1 training, where the backbone
+        # parameters are frozen and only the physics gates are trainable.
+        grad_targets = []
+        grad_indices = []
+
+        for i, tensor in enumerate(ctx.input_tensors):
+            if tensor.requires_grad:
+                grad_targets.append(tensor)
+                grad_indices.append(("input", i))
+
+        for i, param in enumerate(ctx.input_params):
+            if param.requires_grad:
+                grad_targets.append(param)
+                grad_indices.append(("param", i))
+
+        if grad_targets:
+            computed_grads = th.autograd.grad(
+                output_tensors,
+                grad_targets,
+                output_grads,
+                allow_unused=True,
+            )
+        else:
+            computed_grads = []
+
+        input_grads = [None] * (
+            len(ctx.input_tensors) + len(ctx.input_params)
         )
+
+        for (kind, original_index), grad in zip(
+            grad_indices,
+            computed_grads,
+        ):
+            if kind == "input":
+                input_grads[original_index] = grad
+            else:
+                input_grads[
+                    len(ctx.input_tensors) + original_index
+                ] = grad
+
         del ctx.input_tensors
         del ctx.input_params
         del output_tensors
-        return (None, None) + input_grads
+
+        return (None, None) + tuple(input_grads)

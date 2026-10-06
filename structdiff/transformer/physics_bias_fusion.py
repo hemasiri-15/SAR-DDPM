@@ -132,16 +132,23 @@ class PhysicsBiasFusion(nn.Module):
 
     def __init__(self) -> None:
         super().__init__()
-        self.alpha_orientation = nn.Parameter(torch.tensor(1.0))
-        self.alpha_wavelet = nn.Parameter(torch.zeros(()))
-        self.alpha_spectral = nn.Parameter(torch.zeros(()))
-        self.alpha_confidence = nn.Parameter(torch.zeros(()))
+        # Learnable physics-fusion logits.
+        #
+        # Keep the existing parameter names because train_util.py and
+        # diagnostics reference them directly. The logits are converted
+        # to positive normalized modality weights in forward().
+        self.alpha_orientation = nn.Parameter(torch.tensor(0.0))
+        self.alpha_wavelet = nn.Parameter(torch.tensor(0.0))
+        self.alpha_spectral = nn.Parameter(torch.tensor(0.0))
+        self.alpha_confidence = nn.Parameter(torch.tensor(0.0))
 
         # ==========================================================
         # Research Metrics
         # ==========================================================
         self.last_gate_values = None
         self.last_bias_norm = None
+        self.last_relation_norms = None
+        self.last_contribution_norms = None
 
     def forward(
         self,
@@ -177,24 +184,78 @@ class PhysicsBiasFusion(nn.Module):
             confidence_relation,
         )
 
-        physics_attention_bias = (
-            self.alpha_orientation.to(orientation_relation.dtype)
-            * orientation_relation
+        # ----------------------------------------------------------
+        # Normalize each supplied relation independently.
+        #
+        # Different modalities naturally produce different numerical
+        # relation magnitudes. Independent normalization prevents the
+        # fusion weights from merely compensating for feature scale.
+        # ----------------------------------------------------------
+        relations = [
+            orientation_relation,
+            wavelet_relation,
+            spectral_relation,
+            confidence_relation,
+        ]
+
+        normalized_relations = []
+
+        for relation in relations:
+            if relation is None:
+                normalized_relations.append(None)
+                continue
+
+            relation_float = relation.float()
+            relation_norm = relation_float.norm(
+                dim=(-2, -1),
+                keepdim=True,
+            ).clamp_min(1e-6)
+
+            normalized_relations.append(
+                relation_float / relation_norm
+            )
+
+        # ----------------------------------------------------------
+        # Learn positive normalized modality weights.
+        #
+        # Equal logits give equal initial weights, but training can
+        # learn a different relative contribution for every modality.
+        # ----------------------------------------------------------
+        alpha_logits = torch.stack(
+            [
+                self.alpha_orientation,
+                self.alpha_wavelet,
+                self.alpha_spectral,
+                self.alpha_confidence,
+            ]
         )
 
-        if wavelet_relation is not None:
-            physics_attention_bias = (
-                physics_attention_bias + self.alpha_wavelet * wavelet_relation
-            )
-        if spectral_relation is not None:
-            physics_attention_bias = (
-                physics_attention_bias
-                + self.alpha_spectral * spectral_relation
-            )
-        if confidence_relation is not None:
+        weights = torch.softmax(alpha_logits, dim=0)
+
+        physics_attention_bias = (
+            weights[0].to(orientation_relation.dtype)
+            * normalized_relations[0].to(orientation_relation.dtype)
+        )
+
+        if normalized_relations[1] is not None:
             physics_attention_bias = (
                 physics_attention_bias
-                + self.alpha_confidence * confidence_relation
+                + weights[1].to(orientation_relation.dtype)
+                * normalized_relations[1].to(orientation_relation.dtype)
+            )
+
+        if normalized_relations[2] is not None:
+            physics_attention_bias = (
+                physics_attention_bias
+                + weights[2].to(orientation_relation.dtype)
+                * normalized_relations[2].to(orientation_relation.dtype)
+            )
+
+        if normalized_relations[3] is not None:
+            physics_attention_bias = (
+                physics_attention_bias
+                + weights[3].to(orientation_relation.dtype)
+                * normalized_relations[3].to(orientation_relation.dtype)
             )
 
         # ==========================================================
@@ -203,10 +264,10 @@ class PhysicsBiasFusion(nn.Module):
         # visualization. This does NOT affect gradients or training.
         # ==========================================================
         self.last_gate_values = {
-            "orientation": self.alpha_orientation.detach().item(),
-            "wavelet": self.alpha_wavelet.detach().item(),
-            "spectral": self.alpha_spectral.detach().item(),
-            "confidence": self.alpha_confidence.detach().item(),
+            "orientation": weights[0].detach().item(),
+            "wavelet": weights[1].detach().item(),
+            "spectral": weights[2].detach().item(),
+            "confidence": weights[3].detach().item(),
         }
 
         # ==========================================================
@@ -214,6 +275,76 @@ class PhysicsBiasFusion(nn.Module):
         # Overall magnitude of the fused physics attention bias.
         # ==========================================================
         self.last_bias_norm = physics_attention_bias.norm().detach().item()
+
+        # ==========================================================
+        # Research diagnostics: per-modality contribution audit
+        # ==========================================================
+        with torch.no_grad():
+            self.last_relation_norms = {
+                "orientation": (
+                    orientation_relation.norm().item()
+                    if orientation_relation is not None else 0.0
+                ),
+                "wavelet": (
+                    wavelet_relation.norm().item()
+                    if wavelet_relation is not None else 0.0
+                ),
+                "spectral": (
+                    spectral_relation.norm().item()
+                    if spectral_relation is not None else 0.0
+                ),
+                "confidence": (
+                    confidence_relation.norm().item()
+                    if confidence_relation is not None else 0.0
+                ),
+            }
+
+            self.last_contribution_norms = {
+                "orientation": (
+                    (
+                        weights[0]
+                        * normalized_relations[0]
+                    ).norm().item()
+                    if normalized_relations[0] is not None else 0.0
+                ),
+                "wavelet": (
+                    (
+                        weights[1]
+                        * normalized_relations[1]
+                    ).norm().item()
+                    if normalized_relations[1] is not None else 0.0
+                ),
+                "spectral": (
+                    (
+                        weights[2]
+                        * normalized_relations[2]
+                    ).norm().item()
+                    if normalized_relations[2] is not None else 0.0
+                ),
+                "confidence": (
+                    (
+                        weights[3]
+                        * normalized_relations[3]
+                    ).norm().item()
+                    if normalized_relations[3] is not None else 0.0
+                ),
+            }
+
+        # Print the first real forward-pass audit only.
+        if not getattr(self, "_audit_printed", False):
+            print("\n========== PHYSICS CONTRIBUTION AUDIT ==========")
+            print("Normalized physics weights:")
+            print("  orientation =", weights[0].detach().item())
+            print("  wavelet     =", weights[1].detach().item())
+            print("  spectral    =", weights[2].detach().item())
+            print("  confidence  =", weights[3].detach().item())
+            print("Raw relation norms:")
+            print(" ", self.last_relation_norms)
+            print("Scaled contribution norms:")
+            print(" ", self.last_contribution_norms)
+            print("Total bias norm:", self.last_bias_norm)
+            print("=================================================\n")
+            self._audit_printed = True
 
         return physics_attention_bias
 
@@ -241,6 +372,12 @@ class PhysicsBiasFusion(nn.Module):
             None if forward() has not yet been called.
         """
         return self.last_bias_norm
+
+    def get_relation_norms(self):
+        return self.last_relation_norms
+
+    def get_contribution_norms(self):
+        return self.last_contribution_norms
 
     @staticmethod
     def _validate(

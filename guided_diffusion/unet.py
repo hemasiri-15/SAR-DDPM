@@ -43,6 +43,11 @@ USE_WAVELET = True
 USE_PHYSICS = True
 USE_MS = True
 
+# Temporary ablation switches for Struct pathway isolation.
+# Keep both False for the normal/full model.
+ABLATE_STRUCT_EMBEDDING = False
+ABLATE_STRUCT_PHYSICS_BIAS = False
+
 class AttentionPool2d(nn.Module):
     """
     Adapted from CLIP: https://github.com/openai/CLIP/blob/main/clip/model.py
@@ -535,6 +540,8 @@ class UNetModel(nn.Module):
         # ======================================================
         self.last_condition_weights = None
 
+        self.last_condition_weights_tensor = None
+
         self.physics_attention_bias_builder = PhysicsAttentionBiasBuilder()
 
         if self.num_classes is not None:
@@ -816,7 +823,7 @@ class UNetModel(nn.Module):
         if USE_LOOK and look_num is not None:
             look_emb = self.look_emb(look_num).to(self.dtype)
 
-        if USE_PHYSICS and struct_tensor is not None:
+        if USE_PHYSICS and struct_tensor is not None and not ABLATE_STRUCT_EMBEDDING:
             struct_emb = self.struct_encoder(struct_tensor).to(self.dtype)
             # (previously also did `emb = emb + struct_emb` here directly --
             # that double-counted structure-tensor conditioning, since
@@ -870,7 +877,33 @@ class UNetModel(nn.Module):
                 dim=1
             )
 
-            weights = torch.softmax(scores, dim=1).to(self.dtype)
+            gate_probs = torch.softmax(scores, dim=1)
+            gate_floor = 0.05
+            weights = (
+                (1.0 - gate_floor) * gate_probs
+                + gate_floor / gate_probs.shape[1]
+            ).to(self.dtype)
+
+            # ==========================================================
+            # TEMPORARY CONDITIONING DIAGNOSTIC
+            # ==========================================================
+            if not hasattr(self, "_condition_debug_printed"):
+                print("\n========== CONDITIONING DEBUG ==========")
+
+                for i, (name, e) in enumerate(
+                    zip(condition_names, condition_embeddings)
+                ):
+                    print(
+                        f"{name:10s} | "
+                        f"norm={e.float().norm(dim=1).mean().item():.6f} | "
+                        f"mean={e.float().mean().item():.6f} | "
+                        f"std={e.float().std().item():.6f} | "
+                        f"score={scores[:, i].mean().item():.6f} | "
+                        f"weight={weights[:, i].float().mean().item():.6f}"
+                    )
+
+                print("=========================================\n")
+                self._condition_debug_printed = True
 
             # ==========================================================
             # Research Metric
@@ -884,11 +917,36 @@ class UNetModel(nn.Module):
 
                 self.last_condition_weights = stats
 
+            self.last_condition_weights_tensor = weights
+
+            # ==========================================================
+            # Balanced Condition Fusion
+            #
+            # The gate weights alone do NOT equalize branch influence:
+            # embeddings can have very different magnitudes. Normalize
+            # each branch independently before applying the learned gate.
+            #
+            # This preserves the learned softmax weighting while preventing
+            # a high-norm condition (e.g. MSStruct) from dominating purely
+            # because of embedding scale.
+            # ==========================================================
+            normalized_condition_embeddings = []
+
+            for e in condition_embeddings:
+                e_float = e.float()
+
+                # RMS/L2 normalization across the embedding dimension.
+                # eps prevents division by zero while preserving gradients.
+                e_norm = e_float.norm(dim=1, keepdim=True).clamp_min(1e-6)
+
+                normalized_condition_embeddings.append(
+                    (e_float / e_norm).to(self.dtype)
+                )
+
             fused_embedding = emb.new_zeros(emb.shape)
 
-            for i, e in enumerate(condition_embeddings):
-
-                fused_embedding += weights[:, i:i+1] * e
+            for i, e_norm in enumerate(normalized_condition_embeddings):
+                fused_embedding += weights[:, i:i+1] * e_norm
 
             emb = emb + fused_embedding
 
@@ -898,7 +956,11 @@ class UNetModel(nn.Module):
             hs.append(h)
 
         physics_attention_bias = None
-        if USE_PHYSICS and struct_tensor is not None:
+        if (
+            USE_PHYSICS
+            and struct_tensor is not None
+            and not ABLATE_STRUCT_PHYSICS_BIAS
+        ):
             bottleneck_height, bottleneck_width = h.shape[-2], h.shape[-1]
             struct_tensor_at_bottleneck = F.interpolate(
                 struct_tensor,
@@ -908,7 +970,9 @@ class UNetModel(nn.Module):
             )
 
             physics_attention_bias = self.physics_attention_bias_builder(
-                struct_tensor_at_bottleneck
+                struct_tensor_at_bottleneck,
+                wavelet_features=wavelet_tensor,
+                spectral_features=spectral_tensor,
             )
 
         h = self.middle_block(
